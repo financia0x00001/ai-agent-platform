@@ -35,6 +35,10 @@
                         <i class="ri-settings-3-line"></i>
                         <span>LLM设置</span>
                     </a>
+                    <a href="/docs" target="_blank" class="nav-item">
+                        <i class="ri-book-open-line"></i>
+                        <span>API 文档</span>
+                    </a>
                 </nav>
                 <div class="sidebar-footer">
                     <div class="llm-status" :class="{connected: hasDefaultLLM}">
@@ -53,8 +57,12 @@
                             <i class="ri-add-line"></i> 新建项目
                         </button>
                     </div>
-                    <div class="projects-grid" v-if="projects.length">
-                        <div class="project-card" v-for="p in projects" :key="p.id" @click="openProject(p)">
+                    <div class="projects-search" v-if="projects.length">
+                        <i class="ri-search-line"></i>
+                        <input type="text" v-model="projectSearch" placeholder="搜索项目名称或需求...">
+                    </div>
+                    <div class="projects-grid" v-if="filteredProjects.length">
+                        <div class="project-card" v-for="p in filteredProjects" :key="p.id" @click="openProject(p)">
                             <div class="project-card-header">
                                 <h3>{{ p.name }}</h3>
                                 <span :class="['status-badge', p.status]">{{ statusText(p.status) }}</span>
@@ -70,9 +78,13 @@
                             </div>
                         </div>
                     </div>
-                    <div class="empty-state" v-else>
+                    <div class="empty-state" v-if="!projects.length">
                         <i class="ri-folder-open-line"></i>
                         <p>暂无项目，点击上方按钮创建</p>
+                    </div>
+                    <div class="empty-state small" v-else-if="projects.length && !filteredProjects.length">
+                        <i class="ri-search-line"></i>
+                        <p>没有匹配"{{ projectSearch }}"的项目</p>
                     </div>
                 </div>
 
@@ -519,13 +531,30 @@
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn btn-ghost" @click="showNewLLM=false">取消</button>
-                    <button class="btn btn-primary" @click="createLLMConfig" :disabled="!newLLM.name || !newLLM.api_key">
-                        保存配置
-                    </button>
+                    <div class="modal-footer-left">
+                        <button class="btn btn-accent btn-sm" @click="testLLMConnection" :disabled="!newLLM.api_key || testingLLM">
+                            <i :class="testingLLM ? 'ri-loader-4-line ri-spin' : 'ri-link'"></i>
+                            {{ testingLLM ? '测试中...' : '测试连接' }}
+                        </button>
+                        <span class="test-result" v-if="testResult" :class="{success: testResult.success}">
+                            {{ testResult.message }}
+                        </span>
+                    </div>
+                    <div class="modal-footer-right">
+                        <button class="btn btn-ghost" @click="showNewLLM=false">取消</button>
+                        <button class="btn btn-primary" @click="createLLMConfig" :disabled="!newLLM.name || !newLLM.api_key">
+                            保存配置
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div class="toast-container" v-if="toast.show" :class="toast.type">
+        <i :class="{'ri-checkbox-circle-fill': toast.type === 'success', 'ri-error-warning-fill': toast.type === 'error', 'ri-information-fill': toast.type === 'info'}"></i>
+        <span>{{ toast.message }}</span>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/vue@3.4.15/dist/vue.global.prod.js"></script>

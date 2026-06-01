@@ -111,6 +111,44 @@ async def delete_config(config_id: str):
     return {"message": "配置删除成功"}
 
 
+@router.post("/test")
+async def test_llm_connection(data: LLMConfigCreate):
+    """测试 LLM 连接是否正常"""
+    from core.llm_provider import LLMProvider
+
+    provider_info = KNOWN_PROVIDERS.get(data.provider_id, KNOWN_PROVIDERS["custom"])
+    config = {
+        "provider_id": data.provider_id,
+        "api_key": data.api_key,
+        "base_url": data.base_url or provider_info.get("base_url", ""),
+        "model": data.model or provider_info.get("default_model", ""),
+        "temperature": 0.1,
+        "max_tokens": 50,
+    }
+
+    try:
+        provider = LLMProvider(config)
+        start = __import__("time").time()
+        response = await provider.chat([{"role": "user", "content": "回复OK"}])
+        elapsed = round(__import__("time").time() - start, 2)
+        return {
+            "success": True,
+            "message": f"连接成功 ({elapsed}s)",
+            "elapsed": elapsed,
+            "model": config["model"],
+            "response": response[:100],
+        }
+    except Exception as e:
+        error_msg = str(e)
+        if "401" in error_msg or "Unauthorized" in error_msg:
+            error_msg = "API Key 无效，请检查"
+        elif "429" in error_msg or "Rate limit" in error_msg:
+            error_msg = "API 限流，稍后重试"
+        elif "timeout" in error_msg.lower() or "connect" in error_msg.lower():
+            error_msg = "连接超时，请检查 Base URL 和网络"
+        return {"success": False, "message": error_msg}
+
+
 @router.get("/default")
 async def get_default():
     default = get_default_llm()

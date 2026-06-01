@@ -48,6 +48,15 @@ createApp({
         const MAX_RECONNECT_DELAY = 30000;
         const editingArtifact = ref(false);
         const editArtifactContent = ref('');
+        const toast = reactive({ show: false, message: '', type: 'info' });
+
+        function showToast(message, type = 'info') {
+            toast.message = message;
+            toast.type = type;
+            toast.show = true;
+            clearTimeout(toast._timer);
+            toast._timer = setTimeout(() => { toast.show = false; }, 3500);
+        }
 
         const artifactTabs = [
             { key: 'user_requirement', label: '原始需求', icon: 'ri-file-text-line' },
@@ -334,6 +343,45 @@ createApp({
             } catch (e) { console.error(e); }
         }
 
+        const projectSearch = ref('');
+        const testingLLM = ref(false);
+        const testResult = ref(null);
+
+        const filteredProjects = computed(() => {
+            if (!projectSearch.value) return projects.value;
+            const q = projectSearch.value.toLowerCase();
+            return projects.value.filter(p =>
+                p.name.toLowerCase().includes(q) ||
+                (p.requirement || '').toLowerCase().includes(q)
+            );
+        });
+
+        async function testLLMConnection() {
+            testingLLM.value = true;
+            testResult.value = null;
+            try {
+                const res = await fetch(`${API}/llm/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: 'test',
+                        provider_id: newLLM.provider_id,
+                        api_key: newLLM.api_key,
+                        base_url: newLLM.base_url || undefined,
+                        model: newLLM.model || undefined,
+                    }),
+                });
+                const data = await res.json();
+                testResult.value = data;
+                showToast(data.success ? 'LLM 连接成功 ✅' : '连接失败: ' + data.message, data.success ? 'success' : 'error');
+            } catch (e) {
+                testResult.value = { success: false, message: '网络请求失败' };
+                showToast('测试请求失败', 'error');
+            } finally {
+                testingLLM.value = false;
+            }
+        }
+
         function onProviderChange() {
             newLLM.base_url = '';
             newLLM.model = '';
@@ -612,8 +660,9 @@ createApp({
             newProject, newLLM, artifactTabs, currentArtifactContent,
             hasArtifact, fetchProjects, openProject, createProject,
             startProject, stopProject, deleteProject, createLLMConfig,
-            setDefaultLLM, deleteLLMConfig, onProviderChange,
+            setDefaultLLM, deleteLLMConfig, onProviderChange, testLLMConnection, testingLLM, testResult,
             providerBaseUrl, providerModels, providerDefaultModel, providerName,
+            projectSearch, filteredProjects, toast, showToast,
             selectAgent, statusText, phaseText, agentIcon, agentStatusText,
             artifactLabel, artifactIcon, formatArtifact, formatTime, formatLogTime, logMessage,
             editingArtifact, editArtifactContent, startEditArtifact, saveArtifactEdit, cancelEditArtifact,

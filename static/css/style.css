@@ -573,6 +573,48 @@ body {
 }
 .artifact-textarea:focus { outline: none; border-color: var(--accent-light); }
 
+/* Toast 通知 */
+.toast-container {
+    position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 20px; border-radius: var(--radius);
+    font-size: 13px; font-weight: 500;
+    animation: toastIn 0.3s ease;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+}
+.toast-container.success { background: var(--success-bg); color: var(--success); border: 1px solid var(--success); }
+.toast-container.error { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger); }
+.toast-container.info { background: var(--info-bg); color: var(--info); border: 1px solid var(--info); }
+.toast-container i { font-size: 18px; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+/* 项目搜索 */
+.projects-search {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--bg-input); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 10px 16px; margin-bottom: 16px;
+}
+.projects-search i { color: var(--text-muted); font-size: 16px; }
+.projects-search input {
+    flex: 1; background: transparent; border: none; outline: none;
+    color: var(--text-primary); font-size: 14px; font-family: inherit;
+}
+.projects-search input::placeholder { color: var(--text-muted); }
+
+/* 测试按钮旋转动画 */
+.ri-spin { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* 测试结果 */
+.test-result { font-size: 12px; margin-left: 8px; }
+.test-result.success { color: var(--success); }
+.test-result:not(.success) { color: var(--danger); }
+
+/* Modal footer 左右分布 */
+.modal-footer { display: flex; align-items: center; justify-content: space-between; }
+.modal-footer-left { display: flex; align-items: center; }
+.modal-footer-right { display: flex; gap: 8px; }
+
 .artifact-code {
     background: var(--bg-primary);
     border: 1px solid var(--border);
