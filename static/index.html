@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI智能体协作平台</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@4.1.0/fonts/remixicon.css" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <div class="app-layout">
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <div class="logo">
+                        <i class="ri-robot-2-line"></i>
+                        <span>AI智能体协作</span>
+                    </div>
+                </div>
+                <nav class="sidebar-nav">
+                    <a href="#" :class="['nav-item', {active: currentView === 'projects'}]" @click.prevent="currentView='projects'">
+                        <i class="ri-projector-line"></i>
+                        <span>项目管理</span>
+                    </a>
+                    <a href="#" :class="['nav-item', {active: currentView === 'workspace'}]" @click.prevent="currentView='workspace'" v-if="currentProject">
+                        <i class="ri-code-s-slash-line"></i>
+                        <span>工作台</span>
+                    </a>
+                    <a href="#" :class="['nav-item', {active: currentView === 'delivery'}]" @click.prevent="openDelivery" v-if="currentProject && (currentProject.status === 'completed' || currentProject.status === 'stopped')">
+                        <i class="ri-download-cloud-line"></i>
+                        <span>交付中心</span>
+                    </a>
+                    <a href="#" :class="['nav-item', {active: currentView === 'settings'}]" @click.prevent="currentView='settings'">
+                        <i class="ri-settings-3-line"></i>
+                        <span>LLM设置</span>
+                    </a>
+                </nav>
+                <div class="sidebar-footer">
+                    <div class="llm-status" :class="{connected: hasDefaultLLM}">
+                        <i :class="hasDefaultLLM ? 'ri-checkbox-circle-fill' : 'ri-error-warning-fill'"></i>
+                        <span>{{ hasDefaultLLM ? 'LLM已连接' : '未配置LLM' }}</span>
+                    </div>
+                </div>
+            </aside>
+
+            <main class="main-content">
+                <!-- 项目列表 -->
+                <div v-if="currentView === 'projects'" class="view-container">
+                    <div class="page-header">
+                        <h1>项目管理</h1>
+                        <button class="btn btn-primary" @click="showNewProject = true">
+                            <i class="ri-add-line"></i> 新建项目
+                        </button>
+                    </div>
+                    <div class="projects-grid" v-if="projects.length">
+                        <div class="project-card" v-for="p in projects" :key="p.id" @click="openProject(p)">
+                            <div class="project-card-header">
+                                <h3>{{ p.name }}</h3>
+                                <span :class="['status-badge', p.status]">{{ statusText(p.status) }}</span>
+                            </div>
+                            <p class="project-requirement">{{ p.requirement }}</p>
+                            <div class="project-card-footer">
+                                <span class="project-time">{{ formatTime(p.created_at) }}</span>
+                                <div class="project-actions">
+                                    <button class="btn-icon" @click.stop="deleteProject(p.id)" title="删除">
+                                        <i class="ri-delete-bin-line"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="empty-state" v-else>
+                        <i class="ri-folder-open-line"></i>
+                        <p>暂无项目，点击上方按钮创建</p>
+                    </div>
+                </div>
+
+                <!-- 工作台 -->
+                <div v-if="currentView === 'workspace' && currentProject" class="view-container workspace">
+                    <div class="page-header">
+                        <div class="header-left">
+                            <button class="btn btn-ghost" @click="currentView='projects'">
+                                <i class="ri-arrow-left-line"></i>
+                            </button>
+                            <h1>{{ currentProject.name }}</h1>
+                            <span :class="['status-badge', currentProject.status]">{{ statusText(currentProject.status) }}</span>
+                        </div>
+                        <div class="header-right">
+                            <button class="btn btn-primary" @click="startProject" v-if="currentProject.status === 'created' || currentProject.status === 'interrupted'">
+                                <i class="ri-play-fill"></i> {{ currentProject.status === 'interrupted' ? '重新启动' : '启动' }}
+                            </button>
+                            <button class="btn btn-danger" @click="stopProject" v-if="currentProject.status === 'running'">
+                                <i class="ri-stop-fill"></i> 停止
+                            </button>
+                            <button class="btn btn-success" @click="openDelivery" v-if="currentProject.status === 'completed'">
+                                <i class="ri-download-cloud-line"></i> 交付
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="workspace-body">
+                        <div class="workspace-left">
+                            <!-- 智能体流程图 -->
+                            <div class="panel agents-panel">
+                                <div class="panel-header">
+                                    <h2><i class="ri-team-line"></i> 智能体团队</h2>
+                                    <span class="phase-tag" v-if="projectStatus.current_phase">
+                                        {{ phaseText(projectStatus.current_phase) }}
+                                    </span>
+                                </div>
+                                <div class="agents-flow">
+                                    <div class="agent-node" v-for="(agent, key) in projectStatus.agents" :key="key"
+                                         :class="[agent.status, {active: selectedAgent === key}]"
+                                         @click="selectAgent(key)">
+                                        <div class="agent-icon">
+                                            <i :class="agentIcon(key)"></i>
+                                        </div>
+                                        <div class="agent-info">
+                                            <span class="agent-name">{{ agent.display_name }}</span>
+                                            <span class="agent-status">{{ agentStatusText(agent) }}</span>
+                                        </div>
+                                        <div class="agent-progress" v-if="agent.status === 'running'">
+                                            <div class="progress-bar">
+                                                <div class="progress-fill" :style="{width: agent.progress + '%'}"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="flow-connector">
+                                        <div class="connector-line phase-1"></div>
+                                        <div class="connector-line phase-2"></div>
+                                        <div class="connector-line phase-3"></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 实时日志 -->
+                            <div class="panel logs-panel">
+                                <div class="panel-header">
+                                    <h2><i class="ri-terminal-line"></i> 实时日志</h2>
+                                    <button class="btn btn-sm btn-ghost" @click="logs=[]">清空</button>
+                                </div>
+                                <div class="logs-body" ref="logsContainer">
+                                    <div class="log-item" v-for="(log, i) in logs" :key="i"
+                                         :class="log.type">
+                                        <span class="log-time">{{ formatLogTime(log.timestamp) }}</span>
+                                        <span class="log-type">{{ log.type }}</span>
+                                        <span class="log-msg">{{ logMessage(log) }}</span>
+                                    </div>
+                                    <div class="log-empty" v-if="!logs.length">
+                                        <i class="ri-inbox-line"></i> 等待日志...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="workspace-right">
+                            <!-- 审批面板 -->
+                            <div class="panel approval-panel" v-if="approvalInfo.current_approval">
+                                <div class="panel-header">
+                                    <h2><i class="ri-checkbox-circle-line"></i> {{ approvalInfo.current_info?.label || '审批' }}</h2>
+                                    <span class="approval-waiting-badge">等待审批</span>
+                                </div>
+                                <div class="approval-body">
+                                    <p class="approval-desc">{{ approvalInfo.current_info?.description }}</p>
+
+                                    <div class="approval-artifacts-hint">
+                                        <span>请查看以下产出物后做出决定：</span>
+                                        <div class="approval-artifact-links">
+                                            <button v-for="ak in approvalInfo.current_info?.review_artifacts" :key="ak"
+                                                    class="btn btn-sm btn-ghost" @click="selectedArtifact = ak"
+                                                    v-show="hasArtifact(ak)">
+                                                <i :class="artifactIcon(ak)"></i> {{ artifactLabel(ak) }}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label>修改意见（驳回或重跑时填写）</label>
+                                        <textarea v-model="approvalFeedback" rows="3"
+                                                  placeholder="请描述你的修改意见，对应智能体会根据意见重新生成..."></textarea>
+                                    </div>
+
+                                    <div class="approval-actions">
+                                        <button class="btn btn-success" @click="submitApproval('approve')">
+                                            <i class="ri-checkbox-circle-fill"></i> 通过
+                                        </button>
+                                        <button class="btn btn-warning" @click="submitApproval('reject', true)"
+                                                :disabled="!approvalFeedback.trim()">
+                                            <i class="ri-close-circle-line"></i> 驳回修改
+                                        </button>
+                                        <button class="btn btn-accent" @click="showRerunOptions = !showRerunOptions">
+                                            <i class="ri-refresh-line"></i> 局部重跑
+                                        </button>
+                                    </div>
+
+                                    <div class="rerun-options" v-if="showRerunOptions">
+                                        <label>选择要重跑的智能体：</label>
+                                        <div class="rerun-agents">
+                                            <label class="checkbox-label" v-for="opt in rerunOptions" :key="opt.name">
+                                                <input type="checkbox" :value="opt.name" v-model="selectedRerunAgents">
+                                                <span>{{ opt.display_name }}</span>
+                                                <small>{{ opt.description }}</small>
+                                            </label>
+                                        </div>
+                                        <button class="btn btn-accent" @click="submitApproval('rerun')"
+                                                :disabled="!selectedRerunAgents.length || !approvalFeedback.trim()">
+                                            <i class="ri-refresh-line"></i> 提交重跑
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 产出物面板 -->
+                            <div class="panel artifacts-panel">
+                                <div class="panel-header">
+                                    <h2><i class="ri-file-code-line"></i> 产出物</h2>
+                                </div>
+                                <div class="artifacts-tabs">
+                                    <button v-for="tab in artifactTabs" :key="tab.key"
+                                            :class="['artifact-tab', {active: selectedArtifact === tab.key}]"
+                                            @click="selectedArtifact = tab.key"
+                                            v-show="hasArtifact(tab.key)">
+                                        <i :class="tab.icon"></i> {{ tab.label }}
+                                    </button>
+                                </div>
+                                <div class="artifact-content">
+                                    <div class="artifact-viewer" v-if="currentArtifactContent">
+                                        <div class="artifact-meta">
+                                            <span>{{ artifactLabel(selectedArtifact) }}</span>
+                                        </div>
+                                        <pre class="artifact-code"><code>{{ formatArtifact(currentArtifactContent) }}</code></pre>
+                                    </div>
+                                    <div class="empty-state small" v-else>
+                                        <i class="ri-file-unknow-line"></i>
+                                        <p>暂无产出物</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 交付中心 -->
+                <div v-if="currentView === 'delivery' && currentProject" class="view-container delivery-view">
+                    <div class="page-header">
+                        <div class="header-left">
+                            <button class="btn btn-ghost" @click="currentView='workspace'">
+                                <i class="ri-arrow-left-line"></i>
+                            </button>
+                            <h1>交付中心</h1>
+                            <span :class="['status-badge', deliveryReport.can_deliver ? 'completed' : 'failed']">
+                                {{ deliveryReport.can_deliver ? '可交付' : '待修复' }}
+                            </span>
+                        </div>
+                        <div class="header-right">
+                            <button class="btn btn-primary" @click="downloadProject">
+                                <i class="ri-download-line"></i> 下载ZIP
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="delivery-body" v-if="deliveryReport.project_name">
+                        <!-- 交付状态卡片 -->
+                        <div class="delivery-status-cards">
+                            <div class="delivery-card" :class="{passed: deliveryReport.test_passed}">
+                                <div class="delivery-card-icon">
+                                    <i :class="deliveryReport.test_passed ? 'ri-checkbox-circle-fill' : 'ri-close-circle-fill'"></i>
+                                </div>
+                                <div class="delivery-card-content">
+                                    <h3>功能测试</h3>
+                                    <div class="delivery-card-stats">
+                                        <span class="stat-item"><b>{{ deliveryReport.test_summary?.passed || 0 }}</b> 通过</span>
+                                        <span class="stat-item"><b>{{ deliveryReport.test_summary?.failed || 0 }}</b> 失败</span>
+                                        <span class="stat-item"><b>{{ deliveryReport.test_summary?.critical_bugs || 0 }}</b> 严重Bug</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="delivery-card" :class="{passed: deliveryReport.security_passed}">
+                                <div class="delivery-card-icon">
+                                    <i :class="deliveryReport.security_passed ? 'ri-shield-check-fill' : 'ri-shield-cross-fill'"></i>
+                                </div>
+                                <div class="delivery-card-content">
+                                    <h3>安全审计</h3>
+                                    <div class="delivery-card-stats">
+                                        <span class="stat-item"><b>{{ deliveryReport.security_summary?.critical || 0 }}</b> 严重</span>
+                                        <span class="stat-item"><b>{{ deliveryReport.security_summary?.high || 0 }}</b> 高危</span>
+                                        <span class="stat-item"><b>{{ deliveryReport.security_summary?.medium || 0 }}</b> 中危</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="delivery-card info">
+                                <div class="delivery-card-icon">
+                                    <i class="ri-file-copy-2-fill"></i>
+                                </div>
+                                <div class="delivery-card-content">
+                                    <h3>交付物</h3>
+                                    <div class="delivery-card-stats">
+                                        <span class="stat-item"><b>{{ deliveryReport.artifacts_count || 0 }}</b> 项产出</span>
+                                        <span class="stat-item"><b>{{ deliveryPreview.total_files || 0 }}</b> 个文件</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="delivery-content">
+                            <!-- 项目文件预览 -->
+                            <div class="panel delivery-files-panel">
+                                <div class="panel-header">
+                                    <h2><i class="ri-folder-3-line"></i> 项目文件</h2>
+                                </div>
+                                <div class="delivery-files-list">
+                                    <div class="file-item" v-for="f in deliveryPreview.files" :key="f.path"
+                                         @click="previewFile(f.path)">
+                                        <i :class="fileIcon(f.path)"></i>
+                                        <div class="file-info">
+                                            <span class="file-path">{{ f.path }}</span>
+                                            <span class="file-desc">{{ f.description }}</span>
+                                        </div>
+                                        <span class="file-size">{{ formatFileSize(f.size) }}</span>
+                                    </div>
+                                    <div class="empty-state small" v-if="!deliveryPreview.files?.length">
+                                        <i class="ri-folder-open-line"></i>
+                                        <p>暂无文件</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 交付报告 -->
+                            <div class="panel delivery-report-panel">
+                                <div class="panel-header">
+                                    <h2><i class="ri-file-text-line"></i> 交付报告</h2>
+                                </div>
+                                <div class="delivery-report-content">
+                                    <pre class="artifact-code" v-if="deliveryReport.report_markdown">{{ deliveryReport.report_markdown }}</pre>
+                                    <div class="empty-state small" v-else>
+                                        <i class="ri-file-unknow-line"></i>
+                                        <p>暂无报告</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="empty-state" v-else>
+                        <i class="ri-inbox-line"></i>
+                        <p>加载交付信息中...</p>
+                    </div>
+                </div>
+
+                <!-- LLM设置 -->
+                <div v-if="currentView === 'settings'" class="view-container">
+                    <div class="page-header">
+                        <h1>LLM设置</h1>
+                        <button class="btn btn-primary" @click="showNewLLM = true">
+                            <i class="ri-add-line"></i> 添加配置
+                        </button>
+                    </div>
+
+                    <div class="llm-cards" v-if="llmConfigs.length">
+                        <div class="llm-card" v-for="c in llmConfigs" :key="c.id"
+                             :class="{default: c.is_default}">
+                            <div class="llm-card-header">
+                                <div class="llm-provider-badge">{{ providerName(c.provider_id) }}</div>
+                                <span class="default-badge" v-if="c.is_default">默认</span>
+                            </div>
+                            <h3>{{ c.name }}</h3>
+                            <div class="llm-card-info">
+                                <div><i class="ri-cpu-line"></i> {{ c.model }}</div>
+                                <div><i class="ri-key-2-line"></i> {{ c.api_key_masked }}</div>
+                                <div><i class="ri-temperature-line"></i> {{ c.temperature }}</div>
+                            </div>
+                            <div class="llm-card-actions">
+                                <button class="btn btn-sm btn-ghost" @click="setDefaultLLM(c.id)" v-if="!c.is_default">
+                                    设为默认
+                                </button>
+                                <button class="btn btn-sm btn-danger" @click="deleteLLMConfig(c.id)">
+                                    删除
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="empty-state" v-else>
+                        <i class="ri-cloud-off-line"></i>
+                        <p>暂无LLM配置，请添加</p>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- 新建项目弹窗 -->
+        <div class="modal-overlay" v-if="showNewProject" @click.self="showNewProject=false">
+            <div class="modal">
+                <div class="modal-header">
+                    <h2>新建项目</h2>
+                    <button class="btn-icon" @click="showNewProject=false"><i class="ri-close-line"></i></button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>项目名称</label>
+                        <input type="text" v-model="newProject.name" placeholder="输入项目名称">
+                    </div>
+                    <div class="form-group">
+                        <label>需求描述</label>
+                        <textarea v-model="newProject.requirement" rows="6"
+                                  placeholder="详细描述你的需求，智能体团队将协作完成..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>使用LLM配置</label>
+                        <select v-model="newProject.llm_config_id">
+                            <option value="">默认配置</option>
+                            <option v-for="c in llmConfigs" :key="c.id" :value="c.id">
+                                {{ c.name }} ({{ c.model }})
+                            </option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-ghost" @click="showNewProject=false">取消</button>
+                    <button class="btn btn-primary" @click="createProject" :disabled="!newProject.name || !newProject.requirement">
+                        创建项目
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 新建LLM配置弹窗 -->
+        <div class="modal-overlay" v-if="showNewLLM" @click.self="showNewLLM=false">
+            <div class="modal">
+                <div class="modal-header">
+                    <h2>添加LLM配置</h2>
+                    <button class="btn-icon" @click="showNewLLM=false"><i class="ri-close-line"></i></button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>配置名称</label>
+                        <input type="text" v-model="newLLM.name" placeholder="如：DeepSeek生产环境">
+                    </div>
+                    <div class="form-group">
+                        <label>提供商</label>
+                        <select v-model="newLLM.provider_id" @change="onProviderChange">
+                            <option v-for="(p, key) in providers" :key="key" :value="key">
+                                {{ p.name }}
+                            </option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <input type="password" v-model="newLLM.api_key" placeholder="sk-xxx">
+                    </div>
+                    <div class="form-group">
+                        <label>Base URL</label>
+                        <input type="text" v-model="newLLM.base_url" :placeholder="providerBaseUrl()">
+                    </div>
+                    <div class="form-group">
+                        <label>模型</label>
+                        <select v-model="newLLM.model" v-if="providerModels().length">
+                            <option v-for="m in providerModels()" :key="m" :value="m">{{ m }}</option>
+                        </select>
+                        <input type="text" v-model="newLLM.model" :placeholder="providerDefaultModel()" v-else>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Temperature</label>
+                            <input type="number" v-model.number="newLLM.temperature" min="0" max="2" step="0.1">
+                        </div>
+                        <div class="form-group">
+                            <label>Max Tokens</label>
+                            <input type="number" v-model.number="newLLM.max_tokens" min="100" max="128000" step="100">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" v-model="newLLM.is_default">
+                            设为默认配置
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-ghost" @click="showNewLLM=false">取消</button>
+                    <button class="btn btn-primary" @click="createLLMConfig" :disabled="!newLLM.name || !newLLM.api_key">
+                        保存配置
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.4.15/dist/vue.global.prod.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

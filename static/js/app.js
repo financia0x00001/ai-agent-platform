@@ -1,0 +1,534 @@
+const { createApp, ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
+
+const API = '/api';
+
+createApp({
+    setup() {
+        const currentView = ref('projects');
+        const projects = ref([]);
+        const currentProject = ref(null);
+        const projectStatus = reactive({ agents: {}, current_phase: '', fix_round: 0 });
+        const logs = ref([]);
+        const selectedAgent = ref('');
+        const selectedArtifact = ref('prd');
+        const artifacts = reactive({});
+        const llmConfigs = ref([]);
+        const providers = ref({});
+        const hasDefaultLLM = ref(false);
+        const showNewProject = ref(false);
+        const showNewLLM = ref(false);
+        const logsContainer = ref(null);
+        const deliveryReport = reactive({
+            project_name: '', can_deliver: false, test_passed: false, security_passed: false,
+            test_summary: {}, security_summary: {}, report_markdown: '', artifacts_count: 0,
+        });
+        const deliveryPreview = reactive({ total_files: 0, files: [] });
+        const approvalInfo = reactive({
+            approval_enabled: true,
+            current_approval: null,
+            current_info: null,
+            approvals: {},
+        });
+        const approvalFeedback = ref('');
+        const showRerunOptions = ref(false);
+        const rerunOptions = ref([]);
+        const selectedRerunAgents = ref([]);
+
+        const newProject = reactive({ name: '', requirement: '', llm_config_id: '' });
+        const newLLM = reactive({
+            name: '', provider_id: 'deepseek', api_key: '', base_url: '',
+            model: '', temperature: 0.7, max_tokens: 4096, is_default: false,
+        });
+
+        let ws = null;
+        let statusInterval = null;
+
+        const artifactTabs = [
+            { key: 'user_requirement', label: '原始需求', icon: 'ri-file-text-line' },
+            { key: 'prd', label: 'PRD文档', icon: 'ri-file-list-3-line' },
+            { key: 'ui_spec', label: 'UI规范', icon: 'ri-palette-line' },
+            { key: 'api_design', label: 'API设计', icon: 'ri-server-line' },
+            { key: 'db_schema', label: '数据库设计', icon: 'ri-database-2-line' },
+            { key: 'frontend_code', label: '前端代码', icon: 'ri-html5-line' },
+            { key: 'backend_code', label: '后端代码', icon: 'ri-code-s-slash-line' },
+            { key: 'test_report', label: '测试报告', icon: 'ri-bug-line' },
+            { key: 'security_report', label: '安全审计', icon: 'ri-shield-check-line' },
+            { key: 'bug_list', label: 'Bug清单', icon: 'ri-error-warning-line' },
+        ];
+
+        const currentArtifactContent = computed(() => {
+            return artifacts[selectedArtifact.value] || null;
+        });
+
+        function hasArtifact(key) {
+            return artifacts[key] !== undefined && artifacts[key] !== null;
+        }
+
+        async function fetchProjects() {
+            try {
+                const res = await fetch(`${API}/projects`);
+                const data = await res.json();
+                projects.value = data.projects || [];
+            } catch (e) { console.error(e); }
+        }
+
+        async function fetchLLMConfigs() {
+            try {
+                const [configsRes, providersRes, defaultRes] = await Promise.all([
+                    fetch(`${API}/llm/configs`),
+                    fetch(`${API}/llm/providers`),
+                    fetch(`${API}/llm/default`),
+                ]);
+                llmConfigs.value = (await configsRes.json()).configs || [];
+                providers.value = (await providersRes.json()).providers || {};
+                hasDefaultLLM.value = (await defaultRes.json()).has_default || false;
+            } catch (e) { console.error(e); }
+        }
+
+        async function openProject(project) {
+            currentProject.value = project;
+            currentView.value = 'workspace';
+            selectedAgent.value = '';
+            logs.value = [];
+            Object.keys(artifacts).forEach(k => delete artifacts[k]);
+
+            await fetchProjectStatus();
+            await fetchArtifacts();
+            await fetchApprovalStatus();
+            connectWS();
+
+            if (statusInterval) clearInterval(statusInterval);
+            statusInterval = setInterval(fetchProjectStatus, 3000);
+        }
+
+        async function fetchProjectStatus() {
+            if (!currentProject.value) return;
+            try {
+                const res = await fetch(`${API}/projects/${currentProject.value.id}/status`);
+                const data = await res.json();
+                Object.assign(projectStatus, data);
+            } catch (e) { console.error(e); }
+        }
+
+        async function fetchArtifacts() {
+            if (!currentProject.value) return;
+            try {
+                const res = await fetch(`${API}/projects/${currentProject.value.id}/artifacts`);
+                const data = await res.json();
+                const arts = data.artifacts || {};
+                for (const [k, v] of Object.entries(arts)) {
+                    artifacts[k] = v.content;
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function connectWS() {
+            if (ws) { ws.close(); ws = null; }
+            if (!currentProject.value) return;
+
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${location.host}/ws/${currentProject.value.id}`);
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleWSMessage(data);
+                } catch (e) { console.error(e); }
+            };
+
+            ws.onclose = () => {
+                setTimeout(() => {
+                    if (currentProject.value && currentView.value === 'workspace') {
+                        connectWS();
+                    }
+                }, 3000);
+            };
+        }
+
+        function handleWSMessage(data) {
+            if (data.type === 'init_status') {
+                Object.assign(projectStatus, { agents: data.agents, current_phase: data.current_phase, fix_round: data.fix_round });
+                return;
+            }
+
+            logs.value.push(data);
+            if (logs.value.length > 500) logs.value = logs.value.slice(-300);
+
+            nextTick(() => {
+                if (logsContainer.value) {
+                    logsContainer.value.scrollTop = logsContainer.value.scrollHeight;
+                }
+            });
+
+            if (['agent_start', 'agent_done', 'agent_error', 'phase_change', 'workflow_done'].includes(data.type)) {
+                fetchProjectStatus();
+            }
+            if (['agent_done', 'workflow_done'].includes(data.type)) {
+                fetchArtifacts();
+            }
+            if (data.type === 'approval_required') {
+                approvalInfo.current_approval = data.point;
+                approvalInfo.current_info = {
+                    label: data.label,
+                    description: data.description,
+                    review_artifacts: data.review_artifacts,
+                };
+                approvalFeedback.value = '';
+                showRerunOptions.value = false;
+                selectedRerunAgents.value = [];
+                fetchRerunOptions(data.point);
+                if (data.review_artifacts && data.review_artifacts.length) {
+                    selectedArtifact.value = data.review_artifacts[0];
+                }
+            }
+            if (data.type === 'approval_decided') {
+                approvalInfo.current_approval = null;
+                approvalInfo.current_info = null;
+                showRerunOptions.value = false;
+            }
+            if (data.type === 'agents_rerun') {
+                fetchArtifacts();
+            }
+            if (data.type === 'workflow_done' || data.type === 'workflow_error') {
+                if (currentProject.value) {
+                    currentProject.value.status = data.type === 'workflow_done' ? 'completed' : 'failed';
+                }
+            }
+        }
+
+        async function createProject() {
+            try {
+                const res = await fetch(`${API}/projects`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(newProject),
+                });
+                const data = await res.json();
+                newProject.name = '';
+                newProject.requirement = '';
+                newProject.llm_config_id = '';
+                showNewProject.value = false;
+                await fetchProjects();
+                const proj = projects.value.find(p => p.id === data.project_id);
+                if (proj) openProject(proj);
+            } catch (e) { console.error(e); }
+        }
+
+        async function startProject() {
+            if (!currentProject.value) return;
+            try {
+                await fetch(`${API}/projects/${currentProject.value.id}/start`, { method: 'POST' });
+                currentProject.value.status = 'running';
+            } catch (e) { console.error(e); }
+        }
+
+        async function stopProject() {
+            if (!currentProject.value) return;
+            try {
+                await fetch(`${API}/projects/${currentProject.value.id}/stop`, { method: 'POST' });
+                currentProject.value.status = 'stopped';
+            } catch (e) { console.error(e); }
+        }
+
+        async function deleteProject(id) {
+            if (!confirm('确定删除此项目？')) return;
+            try {
+                await fetch(`${API}/projects/${id}`, { method: 'DELETE' });
+                if (currentProject.value && currentProject.value.id === id) {
+                    currentProject.value = null;
+                    currentView.value = 'projects';
+                }
+                await fetchProjects();
+            } catch (e) { console.error(e); }
+        }
+
+        async function createLLMConfig() {
+            try {
+                await fetch(`${API}/llm/configs`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(newLLM),
+                });
+                newLLM.name = '';
+                newLLM.api_key = '';
+                newLLM.base_url = '';
+                newLLM.model = '';
+                newLLM.is_default = false;
+                showNewLLM.value = false;
+                await fetchLLMConfigs();
+            } catch (e) { console.error(e); }
+        }
+
+        async function setDefaultLLM(id) {
+            try {
+                await fetch(`${API}/llm/configs/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ is_default: true }),
+                });
+                await fetchLLMConfigs();
+            } catch (e) { console.error(e); }
+        }
+
+        async function deleteLLMConfig(id) {
+            if (!confirm('确定删除此配置？')) return;
+            try {
+                await fetch(`${API}/llm/configs/${id}`, { method: 'DELETE' });
+                await fetchLLMConfigs();
+            } catch (e) { console.error(e); }
+        }
+
+        function onProviderChange() {
+            newLLM.base_url = '';
+            newLLM.model = '';
+        }
+
+        function providerBaseUrl() {
+            const p = providers.value[newLLM.provider_id];
+            return p ? p.base_url : '';
+        }
+
+        function providerModels() {
+            const p = providers.value[newLLM.provider_id];
+            return p ? p.models || [] : [];
+        }
+
+        function providerDefaultModel() {
+            const p = providers.value[newLLM.provider_id];
+            return p ? p.default_model || '' : '';
+        }
+
+        function providerName(id) {
+            const p = providers.value[id];
+            return p ? p.name : id;
+        }
+
+        function selectAgent(key) {
+            selectedAgent.value = key;
+        }
+
+        function statusText(s) {
+            const map = { created: '待启动', running: '运行中', completed: '已完成', failed: '失败', stopped: '已停止', interrupted: '已中断' };
+            return map[s] || s;
+        }
+
+        function phaseText(p) {
+            const map = { requirement: '需求分析', design_dev: '设计开发', qa: '质量保障', fix: '修复中', done: '已完成' };
+            return map[p] || p;
+        }
+
+        function agentIcon(key) {
+            const map = {
+                product_manager: 'ri-product-hunt-line',
+                ui_designer: 'ri-palette-line',
+                backend_developer: 'ri-server-line',
+                frontend_developer: 'ri-html5-line',
+                tester: 'ri-bug-line',
+                security_auditor: 'ri-shield-check-line',
+            };
+            return map[key] || 'ri-robot-line';
+        }
+
+        function agentStatusText(agent) {
+            const map = { waiting: '等待中', running: '执行中', completed: '已完成', failed: '失败', skipped: '已跳过' };
+            let text = map[agent.status] || agent.status;
+            if (agent.message) text += ` - ${agent.message}`;
+            return text;
+        }
+
+        function artifactLabel(key) {
+            const tab = artifactTabs.find(t => t.key === key);
+            return tab ? tab.label : key;
+        }
+
+        function formatArtifact(content) {
+            if (typeof content === 'string') return content;
+            return JSON.stringify(content, null, 2);
+        }
+
+        function formatTime(iso) {
+            if (!iso) return '';
+            const d = new Date(iso);
+            return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+        }
+
+        function formatLogTime(ts) {
+            if (!ts) return '';
+            const d = new Date(ts * 1000);
+            return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+        }
+
+        function logMessage(log) {
+            if (log.type === 'agent_start') return `${log.display_name} 开始工作`;
+            if (log.type === 'agent_done') return `${log.display_name} 完成工作`;
+            if (log.type === 'agent_error') return `${log.display_name} 出错: ${log.error}`;
+            if (log.type === 'phase_change') return `进入阶段: ${phaseText(log.phase)}`;
+            if (log.type === 'workflow_start') return `工作流启动`;
+            if (log.type === 'workflow_done') return `工作流完成 (修复轮次: ${log.fix_rounds || 0})`;
+            if (log.type === 'workflow_error') return `工作流出错: ${log.error}`;
+            return JSON.stringify(log);
+        }
+
+        async function openDelivery() {
+            if (!currentProject.value) return;
+            currentView.value = 'delivery';
+            await Promise.all([fetchDeliveryReport(), fetchDeliveryPreview()]);
+        }
+
+        async function fetchDeliveryReport() {
+            if (!currentProject.value) return;
+            try {
+                const res = await fetch(`${API}/delivery/${currentProject.value.id}/report`);
+                if (res.ok) {
+                    const data = await res.json();
+                    Object.assign(deliveryReport, data);
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        async function fetchDeliveryPreview() {
+            if (!currentProject.value) return;
+            try {
+                const res = await fetch(`${API}/delivery/${currentProject.value.id}/preview`);
+                if (res.ok) {
+                    const data = await res.json();
+                    deliveryPreview.total_files = data.total_files || 0;
+                    deliveryPreview.files = data.files || [];
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function downloadProject() {
+            if (!currentProject.value) return;
+            window.open(`${API}/delivery/${currentProject.value.id}/download`, '_blank');
+        }
+
+        async function previewFile(path) {
+            if (!currentProject.value) return;
+            try {
+                const res = await fetch(`${API}/delivery/${currentProject.value.id}/file/${encodeURIComponent(path)}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    selectedArtifact.value = '__delivery_file__';
+                    artifacts['__delivery_file__'] = `// ${data.description}\n// ${data.path}\n\n${data.content}`;
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function fileIcon(path) {
+            if (path.endsWith('.py')) return 'ri-python-line';
+            if (path.endsWith('.html')) return 'ri-html5-line';
+            if (path.endsWith('.js')) return 'ri-javascript-line';
+            if (path.endsWith('.css')) return 'ri-css3-line';
+            if (path.endsWith('.md')) return 'ri-markdown-line';
+            if (path.endsWith('.json')) return 'ri-braces-line';
+            if (path.endsWith('.txt')) return 'ri-file-text-line';
+            if (path.endsWith('.sql')) return 'ri-database-2-line';
+            return 'ri-file-line';
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        async function fetchApprovalStatus() {
+            if (!currentProject.value) return;
+            try {
+                const res = await fetch(`${API}/approval/${currentProject.value.id}/status`);
+                if (res.ok) {
+                    const data = await res.json();
+                    approvalInfo.approval_enabled = data.approval_enabled;
+                    approvalInfo.approvals = data.approvals;
+                    if (data.current_approval) {
+                        approvalInfo.current_approval = data.current_approval;
+                        approvalInfo.current_info = data.current_info;
+                    }
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        async function fetchRerunOptions(point) {
+            if (!currentProject.value || !point) return;
+            try {
+                const res = await fetch(`${API}/approval/${currentProject.value.id}/rerun-options/${point}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    rerunOptions.value = data.options || [];
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        async function submitApproval(action, needFeedback = false) {
+            if (!currentProject.value) return;
+            if (needFeedback && !approvalFeedback.value.trim()) return;
+
+            try {
+                const body = {
+                    action: action,
+                    feedback: approvalFeedback.value,
+                    rerun_agents: action === 'rerun' ? selectedRerunAgents.value : [],
+                };
+                await fetch(`${API}/approval/${currentProject.value.id}/decide`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                approvalFeedback.value = '';
+                showRerunOptions.value = false;
+                selectedRerunAgents.value = [];
+            } catch (e) { console.error(e); }
+        }
+
+        function artifactIcon(key) {
+            const map = {
+                user_requirement: 'ri-file-text-line',
+                prd: 'ri-file-list-3-line',
+                ui_spec: 'ri-palette-line',
+                api_design: 'ri-server-line',
+                db_schema: 'ri-database-2-line',
+                frontend_code: 'ri-html5-line',
+                backend_code: 'ri-code-s-slash-line',
+                test_report: 'ri-bug-line',
+                security_report: 'ri-shield-check-line',
+                bug_list: 'ri-error-warning-line',
+            };
+            return map[key] || 'ri-file-line';
+        }
+
+        watch(currentView, (v) => {
+            if (v !== 'workspace') {
+                if (ws) { ws.close(); ws = null; }
+                if (statusInterval) { clearInterval(statusInterval); statusInterval = null; }
+            }
+        });
+
+        onMounted(() => {
+            fetchProjects();
+            fetchLLMConfigs();
+        });
+
+        onUnmounted(() => {
+            if (ws) ws.close();
+            if (statusInterval) clearInterval(statusInterval);
+        });
+
+        return {
+            currentView, projects, currentProject, projectStatus, logs,
+            selectedAgent, selectedArtifact, artifacts, llmConfigs, providers,
+            hasDefaultLLM, showNewProject, showNewLLM, logsContainer,
+            deliveryReport, deliveryPreview,
+            approvalInfo, approvalFeedback, showRerunOptions, rerunOptions, selectedRerunAgents,
+            newProject, newLLM, artifactTabs, currentArtifactContent,
+            hasArtifact, fetchProjects, openProject, createProject,
+            startProject, stopProject, deleteProject, createLLMConfig,
+            setDefaultLLM, deleteLLMConfig, onProviderChange,
+            providerBaseUrl, providerModels, providerDefaultModel, providerName,
+            selectAgent, statusText, phaseText, agentIcon, agentStatusText,
+            artifactLabel, artifactIcon, formatArtifact, formatTime, formatLogTime, logMessage,
+            openDelivery, downloadProject, previewFile, fileIcon, formatFileSize,
+            submitApproval, fetchApprovalStatus,
+        };
+    },
+}).mount('#app');
