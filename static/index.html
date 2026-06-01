@@ -549,12 +549,12 @@
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Toast 通知 -->
-    <div class="toast-container" v-if="toast.show" :class="toast.type">
-        <i :class="{'ri-checkbox-circle-fill': toast.type === 'success', 'ri-error-warning-fill': toast.type === 'error', 'ri-information-fill': toast.type === 'info'}"></i>
-        <span>{{ toast.message }}</span>
+        <!-- Toast 通知 -->
+        <div class="toast-container" v-if="toast.show" :class="toast.type">
+            <i :class="{'ri-checkbox-circle-fill': toast.type === 'success', 'ri-error-warning-fill': toast.type === 'error', 'ri-information-fill': toast.type === 'info'}"></i>
+            <span>{{ toast.message }}</span>
+        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/vue@3.4.15/dist/vue.global.prod.js"></script>
