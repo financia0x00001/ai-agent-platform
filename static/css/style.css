@@ -32,7 +32,7 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
     background: var(--bg-primary);
     color: var(--text-primary);
     line-height: 1.6;
@@ -288,6 +288,8 @@ body {
 .status-badge.completed { background: var(--success-bg); color: var(--success); }
 .status-badge.failed { background: var(--danger-bg); color: var(--danger); }
 .status-badge.stopped { background: var(--warning-bg); color: var(--warning); }
+.status-badge.needs_review { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+.status-badge.interrupted { background: var(--warning-bg); color: var(--warning); }
 
 /* Empty State */
 .empty-state {
@@ -552,10 +554,24 @@ body {
 .artifact-viewer { padding: 16px; }
 
 .artifact-meta {
+    display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 12px;
     font-size: 12px;
     color: var(--text-muted);
 }
+.artifact-edit-actions { display: flex; gap: 6px; }
+.artifact-textarea {
+    width: 100%; min-height: 400px;
+    background: var(--bg-primary);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    padding: 16px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 12px; line-height: 1.6;
+    color: var(--text-primary);
+    resize: vertical;
+}
+.artifact-textarea:focus { outline: none; border-color: var(--accent-light); }
 
 .artifact-code {
     background: var(--bg-primary);
@@ -889,6 +905,16 @@ body {
     gap: 16px;
     transition: all var(--transition);
 }
+
+.delivery-warning {
+    display: flex; align-items: flex-start; gap: 14px;
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: var(--radius); padding: 18px 20px; margin-bottom: 20px;
+}
+.delivery-warning i { font-size: 24px; color: var(--warning); flex-shrink: 0; margin-top: 2px; }
+.delivery-warning strong { color: var(--warning); font-size: 14px; }
+.delivery-warning p { color: #c99a3a; font-size: 13px; margin: 6px 0 0 0; }
 
 .delivery-card.passed { border-color: var(--success); }
 .delivery-card.passed .delivery-card-icon { color: var(--success); }

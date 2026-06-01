@@ -285,8 +285,21 @@ class DeliveryPackager:
             if isinstance(v, dict):
                 report += f"- **[{v.get('severity', '?')}]** {v.get('title', '-')}: {v.get('description', '-')}\n"
 
+        usage = self.artifacts.get("usage_report", {})
+        if usage:
+            report += f"""
+### 七、LLM 用量统计
+
+- **模型**: {usage.get('model', '-')}
+- **API 调用次数**: {usage.get('total_calls', 0)}
+- **输入 Token**: {usage.get('total_input_tokens', 0):,}
+- **输出 Token**: {usage.get('total_output_tokens', 0):,}
+- **总 Token**: {usage.get('total_tokens', 0):,}
+- **预估费用**: ¥{usage.get('estimated_cost_rmb', 0)}
+
+"""
         report += f"""
-### 七、交付物清单
+### 八、交付物清单
 
 - 📄 产品需求文档 (docs/PRD.md)
 - 🎨 UI设计规范 (docs/UI_SPEC.md)
@@ -297,7 +310,7 @@ class DeliveryPackager:
 - 🧪 测试报告 (docs/TEST_REPORT.md)
 - 🔒 安全审计报告 (docs/SECURITY_REPORT.md)
 
-### 八、交付结论
+### 九、交付结论
 
 **{'✅ 项目通过所有测试和安全审计，可以交付' if test_passed and sec_passed else '⚠️ 项目存在待解决问题，建议修复后再交付'}**
 

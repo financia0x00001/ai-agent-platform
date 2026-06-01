@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Dict, Set
 
+logger = logging.getLogger("uvicorn")
+
 router = APIRouter(tags=["WebSocket"])
+
+HEARTBEAT_INTERVAL = 30  # 服务端心跳间隔(秒)，低于大部分代理超时(60s)
+HEARTBEAT_TIMEOUT = 90   # 客户端无响应超时
 
 
 class ConnectionManager:
@@ -28,12 +34,21 @@ class ConnectionManager:
         if project_id in self.active:
             message = json.dumps(data, ensure_ascii=False)
             dead = set()
-            for ws in self.active[project_id]:
+            for ws in list(self.active[project_id]):
                 try:
                     await ws.send_text(message)
                 except Exception:
                     dead.add(ws)
-            self.active[project_id] -= dead
+            if dead:
+                self.active[project_id] -= dead
+
+    async def send_safe(self, websocket: WebSocket, data: dict) -> bool:
+        """安全发送消息，连接断开时返回 False 而非抛异常"""
+        try:
+            await websocket.send_text(json.dumps(data, ensure_ascii=False))
+            return True
+        except Exception:
+            return False
 
 
 manager = ConnectionManager()
@@ -54,19 +69,52 @@ async def websocket_endpoint(websocket: WebSocket, project_id: str):
     blackboard = _blackboards.get(project_id)
     if blackboard:
         status = blackboard.get_status_summary()
-        await websocket.send_text(json.dumps({"type": "init_status", **status}, ensure_ascii=False))
+        # 安全发送 init_status，客户端可能已断开
+        await manager.send_safe(websocket, {"type": "init_status", **status})
 
         if not blackboard._event_callbacks:
             blackboard.on_event(get_ws_callback(project_id))
 
+    # 启动服务端心跳任务
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_loop(websocket, project_id)
+    )
+
     try:
         while True:
-            data = await websocket.receive_text()
+            try:
+                data = await asyncio.wait_for(
+                    websocket.receive_text(), timeout=HEARTBEAT_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                # 客户端太久没发消息（包括心跳），主动断开
+                logger.warning(f"WebSocket heartbeat timeout for project {project_id}")
+                break
+
             try:
                 msg = json.loads(data)
                 if msg.get("type") == "ping":
-                    await websocket.send_text(json.dumps({"type": "pong"}))
+                    await manager.send_safe(websocket, {"type": "pong"})
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"WebSocket error for project {project_id}: {e}")
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
         manager.disconnect(project_id, websocket)
+
+
+async def _heartbeat_loop(websocket: WebSocket, project_id: str):
+    """服务端主动发送心跳 ping，保持代理/NAT 连接活跃"""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        success = await manager.send_safe(websocket, {"type": "ping"})
+        if not success:
+            logger.warning(f"Heartbeat failed for project {project_id}, closing")
+            break

@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    container_name: ai-agent-platform
+    ports:
+      - "8000:8000"
+    volumes:
+      # 持久化项目数据
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/projects"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

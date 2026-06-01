@@ -42,6 +42,12 @@ createApp({
 
         let ws = null;
         let statusInterval = null;
+        let heartbeatTimer = null;
+        let reconnectTimer = null;
+        let reconnectDelay = 1000;
+        const MAX_RECONNECT_DELAY = 30000;
+        const editingArtifact = ref(false);
+        const editArtifactContent = ref('');
 
         const artifactTabs = [
             { key: 'user_requirement', label: '原始需求', icon: 'ri-file-text-line' },
@@ -90,6 +96,7 @@ createApp({
             currentView.value = 'workspace';
             selectedAgent.value = '';
             logs.value = [];
+            editingArtifact.value = false;
             Object.keys(artifacts).forEach(k => delete artifacts[k]);
 
             await fetchProjectStatus();
@@ -123,25 +130,70 @@ createApp({
         }
 
         function connectWS() {
-            if (ws) { ws.close(); ws = null; }
+            // 先清理之前的连接和定时器
+            if (ws) {
+                ws.onclose = null;  // 禁止旧连接触发重连
+                ws.onerror = null;
+                ws.close();
+                ws = null;
+            }
+            if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
             if (!currentProject.value) return;
 
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${location.host}/ws/${currentProject.value.id}`);
 
+            ws.onopen = () => {
+                // 连接成功，重置退避延迟
+                reconnectDelay = 1000;
+
+                // 启动客户端心跳：每 20 秒发送 ping
+                heartbeatTimer = setInterval(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        try {
+                            ws.send(JSON.stringify({ type: 'ping' }));
+                        } catch (e) {
+                            console.error('Heartbeat send error:', e);
+                        }
+                    }
+                }, 20000);
+            };
+
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
+                    // 响应服务端心跳
+                    if (data.type === 'ping') {
+                        try {
+                            ws.send(JSON.stringify({ type: 'pong' }));
+                        } catch (e) { /* ignore */ }
+                        return;
+                    }
+                    if (data.type === 'pong') return;  // 忽略 pong
                     handleWSMessage(data);
                 } catch (e) { console.error(e); }
             };
 
-            ws.onclose = () => {
-                setTimeout(() => {
-                    if (currentProject.value && currentView.value === 'workspace') {
+            ws.onerror = (event) => {
+                console.error('WebSocket error:', event);
+                // onerror 后通常会触发 onclose，不在此处理
+            };
+
+            ws.onclose = (event) => {
+                // 清理心跳
+                if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+
+                // 只在仍在工作区时重连，使用指数退避
+                if (currentProject.value && currentView.value === 'workspace') {
+                    console.log(`WebSocket closed (code: ${event.code}), reconnecting in ${reconnectDelay}ms...`);
+                    reconnectTimer = setTimeout(() => {
                         connectWS();
-                    }
-                }, 3000);
+                    }, reconnectDelay);
+                    // 指数退避：每次翻倍，上限 30s
+                    reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
+                }
             };
         }
 
@@ -191,7 +243,11 @@ createApp({
             }
             if (data.type === 'workflow_done' || data.type === 'workflow_error') {
                 if (currentProject.value) {
-                    currentProject.value.status = data.type === 'workflow_done' ? 'completed' : 'failed';
+                    if (data.type === 'workflow_done') {
+                        currentProject.value.status = data.qa_passed ? 'completed' : 'needs_review';
+                    } else {
+                        currentProject.value.status = 'failed';
+                    }
                 }
             }
         }
@@ -308,7 +364,7 @@ createApp({
         }
 
         function statusText(s) {
-            const map = { created: '待启动', running: '运行中', completed: '已完成', failed: '失败', stopped: '已停止', interrupted: '已中断' };
+            const map = { created: '待启动', running: '运行中', completed: '已完成', needs_review: '待修复', failed: '失败', stopped: '已停止', interrupted: '已中断' };
             return map[s] || s;
         }
 
@@ -364,7 +420,7 @@ createApp({
             if (log.type === 'agent_error') return `${log.display_name} 出错: ${log.error}`;
             if (log.type === 'phase_change') return `进入阶段: ${phaseText(log.phase)}`;
             if (log.type === 'workflow_start') return `工作流启动`;
-            if (log.type === 'workflow_done') return `工作流完成 (修复轮次: ${log.fix_rounds || 0})`;
+            if (log.type === 'workflow_done') return `工作流完成 (修复: ${log.fix_rounds || 0}轮, QA: ${log.qa_passed ? '✅通过' : '❌未通过'})`;
             if (log.type === 'workflow_error') return `工作流出错: ${log.error}`;
             return JSON.stringify(log);
         }
@@ -481,6 +537,35 @@ createApp({
             } catch (e) { console.error(e); }
         }
 
+        function startEditArtifact() {
+            if (selectedArtifact.value.startsWith('__')) return;  // 虚拟产出物不可编辑
+            const content = artifacts[selectedArtifact.value];
+            editArtifactContent.value = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+            editingArtifact.value = true;
+        }
+
+        async function saveArtifactEdit() {
+            if (!currentProject.value) return;
+            try {
+                await fetch(`${API}/projects/${currentProject.value.id}/artifacts/${selectedArtifact.value}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: editArtifactContent.value }),
+                });
+                // 更新本地缓存
+                try {
+                    artifacts[selectedArtifact.value] = JSON.parse(editArtifactContent.value);
+                } catch (e) {
+                    artifacts[selectedArtifact.value] = editArtifactContent.value;
+                }
+                editingArtifact.value = false;
+            } catch (e) { console.error(e); }
+        }
+
+        function cancelEditArtifact() {
+            editingArtifact.value = false;
+        }
+
         function artifactIcon(key) {
             const map = {
                 user_requirement: 'ri-file-text-line',
@@ -499,7 +584,9 @@ createApp({
 
         watch(currentView, (v) => {
             if (v !== 'workspace') {
-                if (ws) { ws.close(); ws = null; }
+                if (ws) { ws.onclose = null; ws.close(); ws = null; }
+                if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+                if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
                 if (statusInterval) { clearInterval(statusInterval); statusInterval = null; }
             }
         });
@@ -510,7 +597,9 @@ createApp({
         });
 
         onUnmounted(() => {
-            if (ws) ws.close();
+            if (ws) { ws.onclose = null; ws.close(); }
+            if (heartbeatTimer) clearInterval(heartbeatTimer);
+            if (reconnectTimer) clearTimeout(reconnectTimer);
             if (statusInterval) clearInterval(statusInterval);
         });
 
@@ -527,6 +616,7 @@ createApp({
             providerBaseUrl, providerModels, providerDefaultModel, providerName,
             selectAgent, statusText, phaseText, agentIcon, agentStatusText,
             artifactLabel, artifactIcon, formatArtifact, formatTime, formatLogTime, logMessage,
+            editingArtifact, editArtifactContent, startEditArtifact, saveArtifactEdit, cancelEditArtifact,
             openDelivery, downloadProject, previewFile, fileIcon, formatFileSize,
             submitApproval, fetchApprovalStatus,
         };

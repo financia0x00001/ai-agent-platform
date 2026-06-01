@@ -97,6 +97,8 @@ async def delivery_report(project_id: str):
     test_summary = test_report.get("summary", {}) if isinstance(test_report, dict) else {}
     sec_summary = security_report.get("summary", {}) if isinstance(security_report, dict) else {}
 
+    usage = artifacts.get("usage_report", {})
+
     return {
         "project_name": prd_title,
         "can_deliver": test_passed and sec_passed,
@@ -115,6 +117,7 @@ async def delivery_report(project_id: str):
             "medium": sec_summary.get("medium", 0),
             "low": sec_summary.get("low", 0),
         },
+        "usage": usage if usage else {},
         "report_markdown": report_file.content,
         "artifacts_count": len(artifacts),
     }

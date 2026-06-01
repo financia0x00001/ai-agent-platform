@@ -69,7 +69,7 @@ class BaseAgent(ABC):
             blackboard.update_agent_status(self.name, "running", 30, "正在生成内容...")
 
             full_response = ""
-            async for chunk in provider.chat_stream(messages):
+            async for chunk in provider.chat_stream_with_retry(messages):
                 full_response += chunk
                 blackboard.update_agent_status(self.name, "running", 50, "正在接收响应...")
 

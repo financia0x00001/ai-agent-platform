@@ -222,6 +222,14 @@ class Blackboard:
         if self._approval_event:
             self._approval_event.set()
 
+    def is_qa_passed(self) -> bool:
+        """检查测试和安全审计是否都通过"""
+        test = self.get_artifact(ArtifactType.TEST_REPORT)
+        security = self.get_artifact(ArtifactType.SECURITY_REPORT)
+        test_ok = test.get("all_passed", False) if isinstance(test, dict) else bool(test)
+        sec_ok = security.get("all_passed", False) if isinstance(security, dict) else bool(security)
+        return test_ok and sec_ok
+
     def get_status_summary(self) -> dict:
         return {
             "project_id": self.project_id,

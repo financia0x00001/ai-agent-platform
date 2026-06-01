@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI智能体协作平台</title>
     <link rel="stylesheet" href="/static/css/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Remix Icon from jsDelivr CDN (accessible in China) -->
     <link href="https://cdn.jsdelivr.net/npm/remixicon@4.1.0/fonts/remixicon.css" rel="stylesheet">
 </head>
 <body>
@@ -27,7 +27,7 @@
                         <i class="ri-code-s-slash-line"></i>
                         <span>工作台</span>
                     </a>
-                    <a href="#" :class="['nav-item', {active: currentView === 'delivery'}]" @click.prevent="openDelivery" v-if="currentProject && (currentProject.status === 'completed' || currentProject.status === 'stopped')">
+                    <a href="#" :class="['nav-item', {active: currentView === 'delivery'}]" @click.prevent="openDelivery" v-if="currentProject && (currentProject.status === 'completed' || currentProject.status === 'stopped' || currentProject.status === 'needs_review')">
                         <i class="ri-download-cloud-line"></i>
                         <span>交付中心</span>
                     </a>
@@ -87,14 +87,17 @@
                             <span :class="['status-badge', currentProject.status]">{{ statusText(currentProject.status) }}</span>
                         </div>
                         <div class="header-right">
-                            <button class="btn btn-primary" @click="startProject" v-if="currentProject.status === 'created' || currentProject.status === 'interrupted'">
-                                <i class="ri-play-fill"></i> {{ currentProject.status === 'interrupted' ? '重新启动' : '启动' }}
+                            <button class="btn btn-primary" @click="startProject" v-if="currentProject.status === 'created' || currentProject.status === 'interrupted' || currentProject.status === 'needs_review'">
+                                <i class="ri-play-fill"></i> {{ currentProject.status === 'interrupted' || currentProject.status === 'needs_review' ? '重新启动' : '启动' }}
                             </button>
                             <button class="btn btn-danger" @click="stopProject" v-if="currentProject.status === 'running'">
                                 <i class="ri-stop-fill"></i> 停止
                             </button>
                             <button class="btn btn-success" @click="openDelivery" v-if="currentProject.status === 'completed'">
                                 <i class="ri-download-cloud-line"></i> 交付
+                            </button>
+                            <button class="btn btn-warning" @click="openDelivery" v-if="currentProject.status === 'needs_review'">
+                                <i class="ri-error-warning-line"></i> 查看报告 & 手动下载
                             </button>
                         </div>
                     </div>
@@ -225,13 +228,32 @@
                                     </button>
                                 </div>
                                 <div class="artifact-content">
-                                    <div class="artifact-viewer" v-if="currentArtifactContent">
+                                    <div class="artifact-viewer" v-if="currentArtifactContent && !editingArtifact">
                                         <div class="artifact-meta">
                                             <span>{{ artifactLabel(selectedArtifact) }}</span>
+                                            <button class="btn btn-sm btn-ghost" @click="startEditArtifact"
+                                                    v-if="approvalInfo.current_approval"
+                                                    title="手动编辑此产出物">
+                                                <i class="ri-edit-line"></i> 编辑
+                                            </button>
                                         </div>
                                         <pre class="artifact-code"><code>{{ formatArtifact(currentArtifactContent) }}</code></pre>
                                     </div>
-                                    <div class="empty-state small" v-else>
+                                    <div class="artifact-editor" v-if="editingArtifact">
+                                        <div class="artifact-meta">
+                                            <span>✏️ 编辑 {{ artifactLabel(selectedArtifact) }}</span>
+                                            <div class="artifact-edit-actions">
+                                                <button class="btn btn-sm btn-primary" @click="saveArtifactEdit">
+                                                    <i class="ri-check-line"></i> 保存
+                                                </button>
+                                                <button class="btn btn-sm btn-ghost" @click="cancelEditArtifact">
+                                                    取消
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <textarea class="artifact-textarea" v-model="editArtifactContent" rows="20"></textarea>
+                                    </div>
+                                    <div class="empty-state small" v-if="!currentArtifactContent && !editingArtifact">
                                         <i class="ri-file-unknow-line"></i>
                                         <p>暂无产出物</p>
                                     </div>
@@ -261,6 +283,14 @@
                     </div>
 
                     <div class="delivery-body" v-if="deliveryReport.project_name">
+                        <!-- 不可交付警告 -->
+                        <div class="delivery-warning" v-if="!deliveryReport.can_deliver">
+                            <i class="ri-alert-fill"></i>
+                            <div>
+                                <strong>⚠️ 项目未达标，不建议直接交付给客户</strong>
+                                <p>测试和安全审计仍有未解决的问题。AI 已尝试 3 轮修复但仍存在问题，建议人工介入修复后重新测试。你也可以下载代码手动修改。</p>
+                            </div>
+                        </div>
                         <!-- 交付状态卡片 -->
                         <div class="delivery-status-cards">
                             <div class="delivery-card" :class="{passed: deliveryReport.test_passed}">
@@ -298,6 +328,19 @@
                                     <div class="delivery-card-stats">
                                         <span class="stat-item"><b>{{ deliveryReport.artifacts_count || 0 }}</b> 项产出</span>
                                         <span class="stat-item"><b>{{ deliveryPreview.total_files || 0 }}</b> 个文件</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="delivery-card info" v-if="deliveryReport.usage?.total_calls">
+                                <div class="delivery-card-icon">
+                                    <i class="ri-money-cny-circle-line"></i>
+                                </div>
+                                <div class="delivery-card-content">
+                                    <h3>LLM 用量</h3>
+                                    <div class="delivery-card-stats">
+                                        <span class="stat-item"><b>{{ deliveryReport.usage.total_calls }}</b> 次调用</span>
+                                        <span class="stat-item"><b>{{ (deliveryReport.usage.total_tokens / 1000).toFixed(1) }}</b>K tokens</span>
+                                        <span class="stat-item"><b>¥{{ deliveryReport.usage.estimated_cost_rmb }}</b> 预估费用</span>
                                     </div>
                                 </div>
                             </div>

@@ -31,7 +31,15 @@ class Orchestrator:
         self.auditor = SecurityAuditorAgent()
 
     def _get_provider(self) -> LLMProvider:
-        return get_provider(self.llm_config)
+        if not hasattr(self, '_cached_provider') or self._cached_provider is None:
+            self._cached_provider = get_provider(self.llm_config)
+        return self._cached_provider
+
+    def get_usage_summary(self) -> dict:
+        """获取本次运行的 LLM 用量统计"""
+        if hasattr(self, '_cached_provider') and self._cached_provider:
+            return self._cached_provider.get_usage_summary()
+        return {}
 
     async def run(self, requirement: str):
         self._running = True
@@ -99,8 +107,10 @@ class Orchestrator:
                     return
 
             self.blackboard.current_phase = Phase.DONE
+            qa_passed = self._all_passed()
             await self.blackboard.emit_event("workflow_done", {
                 "fix_rounds": self.blackboard.fix_round,
+                "qa_passed": qa_passed,
             })
 
         except Exception as e:
@@ -201,6 +211,40 @@ class Orchestrator:
             security_passed = security_report.get("all_passed", False)
 
         return test_passed and security_passed
+
+    async def retry_qa(self):
+        """仅重跑 QA + 修复阶段，用于 needs_review 项目，保留已有产出物"""
+        self._running = True
+        self._cancelled = False
+
+        try:
+            await self.blackboard.emit_event("workflow_start", {"requirement": "(retry QA)"})
+
+            # 从 QA 阶段开始，利用已有 Bug 清单进行修复
+            for round_num in range(settings.max_fix_rounds):
+                self.blackboard.fix_round = self.blackboard.fix_round + 1
+                await self._phase_qa()
+                if self._cancelled:
+                    return
+
+                if self._all_passed():
+                    break
+
+                await self._phase_fix()
+                if self._cancelled:
+                    return
+
+            self.blackboard.current_phase = Phase.DONE
+            qa_passed = self._all_passed()
+            await self.blackboard.emit_event("workflow_done", {
+                "fix_rounds": self.blackboard.fix_round,
+                "qa_passed": qa_passed,
+            })
+
+        except Exception as e:
+            await self.blackboard.emit_event("workflow_error", {"error": str(e)})
+        finally:
+            self._running = False
 
     def cancel(self):
         self._cancelled = True
