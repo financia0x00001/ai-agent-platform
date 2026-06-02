@@ -1,4 +1,4 @@
-# 🤖 AI Agent Collaboration Platform
+# 🤖 AI多智能体协同平台
 
 基于大语言模型的多智能体协作开发平台，模拟真实软件公司的多部门协同工作流程。
 

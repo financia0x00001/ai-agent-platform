@@ -6,7 +6,7 @@ from pathlib import Path
 from config import settings
 from routers import llm_config, project, ws, delivery, approval
 
-app = FastAPI(title=settings.app_name, version=settings.app_version)
+app = FastAPI(title="AI多智能体协同平台", version=settings.app_version)
 
 
 @app.get("/health")
