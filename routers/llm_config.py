@@ -123,7 +123,7 @@ async def test_llm_connection(data: LLMConfigCreate):
         "base_url": data.base_url or provider_info.get("base_url", ""),
         "model": data.model or provider_info.get("default_model", ""),
         "temperature": 0.1,
-        "max_tokens": 50,
+        "max_tokens": 200,  # 推理模型需要更多 token
     }
 
     try:
@@ -144,8 +144,12 @@ async def test_llm_connection(data: LLMConfigCreate):
             error_msg = "API Key 无效，请检查"
         elif "429" in error_msg or "Rate limit" in error_msg:
             error_msg = "API 限流，稍后重试"
-        elif "timeout" in error_msg.lower() or "connect" in error_msg.lower():
+        elif "timeout" in error_msg.lower():
             error_msg = "连接超时，请检查 Base URL 和网络"
+        elif "proxy" in error_msg.lower():
+            error_msg = "系统代理导致连接失败，请检查代理设置或关闭代理后重试"
+        elif "connect" in error_msg.lower():
+            error_msg = "连接失败，请检查 Base URL 和网络（如使用代理请确认代理状态）"
         return {"success": False, "message": error_msg}
 
 
@@ -155,3 +159,16 @@ async def get_default():
     if default:
         return {"has_default": True, "name": default.get("name"), "provider_id": default.get("provider_id"), "model": default.get("model")}
     return {"has_default": False}
+
+
+@router.get("/cache-stats")
+async def get_cache_stats():
+    from core.cache import get_cache
+    return get_cache().get_stats()
+
+
+@router.post("/cache-clear")
+async def clear_cache():
+    from core.cache import get_cache
+    get_cache().clear()
+    return {"message": "缓存已清除"}

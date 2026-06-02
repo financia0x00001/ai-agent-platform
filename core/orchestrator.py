@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import time
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 from config import settings
 from core.blackboard import Blackboard, Phase, ArtifactType, ApprovalPoint
@@ -11,8 +15,30 @@ from agents.pm import ProductManagerAgent
 from agents.ui_designer import UIDesignerAgent
 from agents.backend_dev import BackendDeveloperAgent
 from agents.frontend_dev import FrontendDeveloperAgent
-from agents.tester import TesterAgent
-from agents.auditor import SecurityAuditorAgent
+from agents.qa_engineer import QAEngineerAgent
+
+
+def _bugs_affect_agent(bugs: list, vulns: list, area: str) -> bool:
+    """判断 Bug 或漏洞是否影响指定领域（backend/frontend）"""
+    keywords_map = {
+        "backend": ["api", "后端", "backend", "server", "数据库", "database", "sql", "路由",
+                     "route", "认证", "auth", "权限", "permission", "接口", "endpoint",
+                     "fastapi", "python", "模型", "model", "schema", "import", "依赖"],
+        "frontend": ["前端", "frontend", "html", "css", "js", "javascript", "页面",
+                      "page", "组件", "component", "ui", "样式", "style", "渲染",
+                      "render", "表单", "form", "xss", "dom", "浏览器", "browser"],
+    }
+    keywords = keywords_map.get(area, [])
+    items = list(bugs) + list(vulns)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        text = json.dumps(item, ensure_ascii=False).lower()
+        if any(kw in text for kw in keywords):
+            return True
+    # 无法判断时只修复前端（前端错误更可见，后端影响面更大时会在第二轮被 QA 捕获）
+    return area == "frontend"
+
 
 
 class Orchestrator:
@@ -27,8 +53,7 @@ class Orchestrator:
         self.ui_designer = UIDesignerAgent()
         self.backend_dev = BackendDeveloperAgent()
         self.frontend_dev = FrontendDeveloperAgent()
-        self.tester = TesterAgent()
-        self.auditor = SecurityAuditorAgent()
+        self.qa_engineer = QAEngineerAgent()
 
     def _get_provider(self) -> LLMProvider:
         if not hasattr(self, '_cached_provider') or self._cached_provider is None:
@@ -37,9 +62,14 @@ class Orchestrator:
 
     def get_usage_summary(self) -> dict:
         """获取本次运行的 LLM 用量统计"""
+        summary = {}
         if hasattr(self, '_cached_provider') and self._cached_provider:
-            return self._cached_provider.get_usage_summary()
-        return {}
+            summary = self._cached_provider.get_usage_summary()
+        # 合并输入指纹去重统计
+        cache_stats = self.blackboard.get_cache_stats()
+        if cache_stats.get("skipped_calls", 0) > 0:
+            summary["fingerprint_cache"] = cache_stats
+        return summary
 
     async def run(self, requirement: str):
         self._running = True
@@ -106,6 +136,8 @@ class Orchestrator:
                 if self._cancelled:
                     return
 
+            await self._resolve_negotiations(max_rounds=1)
+
             self.blackboard.current_phase = Phase.DONE
             qa_passed = self._all_passed()
             await self.blackboard.emit_event("workflow_done", {
@@ -139,12 +171,72 @@ class Orchestrator:
         self._auto_save()
 
         await self.frontend_dev.run(provider, self.blackboard)
+        # 记录指纹，后续 _phase_frontend() 会检测是否重复
+        fp = self.blackboard.input_fingerprint("frontend_developer", self.frontend_dev.get_dependencies())
+        self.blackboard.check_and_update_fingerprint("frontend_developer", fp, est_tokens=0)
         self._auto_save()
+
+        await self._resolve_negotiations()
+
+    async def _resolve_negotiations(self, max_rounds: int = 2):
+        provider = self._get_provider()
+        agent_map = {
+            "product_manager": self.pm,
+            "ui_designer": self.ui_designer,
+            "backend_developer": self.backend_dev,
+            "frontend_developer": self.frontend_dev,
+            "qa_engineer": self.qa_engineer,
+        }
+
+        for _ in range(max_rounds):
+            unresolved = [n for n in self.blackboard.negotiation_log if not n.get("resolved")]
+            if not unresolved:
+                break
+
+            affected_agents = set()
+            for neg in unresolved:
+                to_agent = neg["to_agent"]
+                if to_agent in agent_map:
+                    await self.blackboard.emit_event("negotiation_started", {
+                        "from": neg["from_agent"],
+                        "to": to_agent,
+                        "issue": neg["issue"],
+                    })
+                    agent = agent_map[to_agent]
+                    await agent.run(provider, self.blackboard, feedback=neg["suggestion"])
+                    neg["resolved"] = True
+                    await self.blackboard.emit_event("negotiation_resolved", {
+                        "from": neg["from_agent"],
+                        "to": to_agent,
+                    })
+                    affected_agents.add(neg["from_agent"])
+                    affected_agents.add(to_agent)
+
+            downstream = set()
+            for agent_name in affected_agents:
+                if agent_name == "product_manager":
+                    downstream.update(["ui_designer", "backend_developer"])
+                elif agent_name in ("ui_designer", "backend_developer"):
+                    downstream.add("frontend_developer")
+
+            for agent_name in downstream:
+                if agent_name in agent_map and agent_name not in affected_agents:
+                    await agent_map[agent_name].run(provider, self.blackboard)
+
+            self._auto_save()
 
     async def _phase_frontend(self):
         self.blackboard.current_phase = Phase.DESIGN_DEV
+        # 指纹去重：如果 _phase_design_dev() 已跑过前端且输入未变，跳过
+        fp = self.blackboard.input_fingerprint("frontend_developer", self.frontend_dev.get_dependencies())
+        if self.blackboard.check_and_update_fingerprint("frontend_developer", fp, est_tokens=6000):
+            self.blackboard.update_agent_status("frontend_developer", "completed", 100, "输入未变,跳过重复调用(省6000 tokens)")
+            await self.blackboard.emit_event("agent_done", {"agent": "frontend_developer", "display_name": "前端开发", "output_type": "frontend_code", "cached": True})
+            logger.info(f"跳过重复Frontend调用，节省约6000 tokens")
+            return
         provider = self._get_provider()
         await self.frontend_dev.run(provider, self.blackboard)
+        self.blackboard.check_and_update_fingerprint("frontend_developer", fp, est_tokens=0)  # 记录已执行
         self._auto_save()
 
     async def _phase_qa(self):
@@ -152,11 +244,9 @@ class Orchestrator:
         await self.blackboard.emit_event("phase_change", {"phase": "qa"})
 
         provider = self._get_provider()
-
-        test_task = asyncio.create_task(self.tester.run(provider, self.blackboard))
-        audit_task = asyncio.create_task(self.auditor.run(provider, self.blackboard))
-
-        await asyncio.gather(test_task, audit_task)
+        # R1: 全量测试+审计；R2+: 增量复查（只验证上一轮的Bug是否修复）
+        use_delta = self.blackboard.fix_round > 1
+        await self.qa_engineer.run(provider, self.blackboard, is_delta=use_delta)
         self._auto_save()
 
     async def _phase_fix(self):
@@ -165,13 +255,40 @@ class Orchestrator:
 
         provider = self._get_provider()
 
-        self.blackboard.update_agent_status("frontend_developer", "waiting", 0, "修复中...")
-        self.blackboard.update_agent_status("backend_developer", "waiting", 0, "修复中...")
+        # 智能修复：只修有 Bug 的 Agent，跳过无 Bug 的 + 指纹去重
+        test_report = self.blackboard.get_artifact(ArtifactType.TEST_REPORT)
+        security_report = self.blackboard.get_artifact(ArtifactType.SECURITY_REPORT)
+        bugs = test_report.get("bugs", []) if isinstance(test_report, dict) else []
+        vulns = security_report.get("vulnerabilities", []) if isinstance(security_report, dict) else []
 
-        be_task = asyncio.create_task(self.backend_dev.run(provider, self.blackboard, is_fix=True))
-        fe_task = asyncio.create_task(self.frontend_dev.run(provider, self.blackboard, is_fix=True))
+        need_backend = _bugs_affect_agent(bugs, vulns, "backend")
+        need_frontend = _bugs_affect_agent(bugs, vulns, "frontend")
 
-        await asyncio.gather(be_task, fe_task)
+        tasks = []
+        if need_backend:
+            fp_be = self.blackboard.input_fingerprint("backend_developer_fix", self.backend_dev.get_dependencies())
+            if self.blackboard.check_and_update_fingerprint("backend_developer_fix", fp_be, est_tokens=7000):
+                self.blackboard.update_agent_status("backend_developer", "completed", 100, "输入未变,跳过修复(省7000 tokens)")
+                await self.blackboard.emit_event("agent_done", {"agent": "backend_developer", "display_name": "后端开发", "cached": True})
+            else:
+                self.blackboard.update_agent_status("backend_developer", "waiting", 0, "修复中...")
+                tasks.append(asyncio.create_task(self.backend_dev.run(provider, self.blackboard, is_fix=True)))
+        else:
+            self.blackboard.update_agent_status("backend_developer", "skipped", 100, "无相关Bug,跳过")
+
+        if need_frontend:
+            fp_fe = self.blackboard.input_fingerprint("frontend_developer_fix", self.frontend_dev.get_dependencies())
+            if self.blackboard.check_and_update_fingerprint("frontend_developer_fix", fp_fe, est_tokens=6000):
+                self.blackboard.update_agent_status("frontend_developer", "completed", 100, "输入未变,跳过修复(省6000 tokens)")
+                await self.blackboard.emit_event("agent_done", {"agent": "frontend_developer", "display_name": "前端开发", "cached": True})
+            else:
+                self.blackboard.update_agent_status("frontend_developer", "waiting", 0, "修复中...")
+                tasks.append(asyncio.create_task(self.frontend_dev.run(provider, self.blackboard, is_fix=True)))
+        else:
+            self.blackboard.update_agent_status("frontend_developer", "skipped", 100, "无相关Bug,跳过")
+
+        if tasks:
+            await asyncio.gather(*tasks)
         self._auto_save()
 
     async def _rerun_agents(self, agent_names: list[str], feedback: str):
@@ -186,8 +303,7 @@ class Orchestrator:
             "ui_designer": (self.ui_designer, {}),
             "backend_developer": (self.backend_dev, {}),
             "frontend_developer": (self.frontend_dev, {}),
-            "tester": (self.tester, {}),
-            "security_auditor": (self.auditor, {}),
+            "qa_engineer": (self.qa_engineer, {}),
         }
 
         for name in agent_names:

@@ -28,6 +28,8 @@ class ArtifactType(str, Enum):
     SECURITY_REPORT = "security_report"
     BUG_LIST = "bug_list"
     FIX_HISTORY = "fix_history"
+    NEGOTIATION_LOG = "negotiation_log"
+    USAGE_REPORT = "usage_report"
 
 
 class ApprovalPoint(str, Enum):
@@ -42,6 +44,7 @@ class ApprovalStatus:
     status: str = "pending"
     feedback: str = ""
     history: list[dict] = field(default_factory=list)
+    snapshots: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -91,7 +94,11 @@ class Blackboard:
         self.current_phase: Phase = Phase.REQUIREMENT
         self.fix_round: int = 0
         self.logs: list[dict] = []
+        self.negotiation_log: list[dict] = []
         self._event_callbacks: list[Callable] = []
+        # 缓存检测：记录每个 Agent 上次运行时的输入指纹，避免重复调用
+        self._input_fingerprints: dict[str, str] = {}
+        self._cache_stats: dict[str, int] = {"hits": 0, "skipped_calls": 0, "tokens_saved_est": 0}
 
         self.approval_enabled: bool = True
         self.approvals: dict[str, ApprovalStatus] = {
@@ -111,8 +118,7 @@ class Blackboard:
             ("ui_designer", "UI设计师", Phase.DESIGN_DEV),
             ("backend_developer", "后端开发", Phase.DESIGN_DEV),
             ("frontend_developer", "前端开发", Phase.DESIGN_DEV),
-            ("tester", "代码测试", Phase.QA),
-            ("security_auditor", "安全审计", Phase.QA),
+            ("qa_engineer", "质量工程师", Phase.QA),
         ]
         for name, display, phase in agents:
             self.agent_statuses[name] = AgentStatus(
@@ -146,8 +152,12 @@ class Blackboard:
             self.artifacts[key].content = content
             self.artifacts[key].updated_at = now
         else:
+            try:
+                at = ArtifactType(key) if isinstance(artifact_type, str) else artifact_type
+            except ValueError:
+                at = ArtifactType.NEGOTIATION_LOG
             self.artifacts[key] = Artifact(
-                artifact_type=ArtifactType(key) if isinstance(artifact_type, str) else artifact_type,
+                artifact_type=at,
                 content=content,
                 created_at=now,
                 updated_at=now,
@@ -185,6 +195,12 @@ class Blackboard:
             "review_artifacts": info["review_artifacts"],
         })
 
+        snapshot = {
+            "timestamp": time.time(),
+            "action": "pending",
+            "artifacts": {k: {"type": v.artifact_type.value, "content_hash": hash(str(v.content))} for k, v in self.artifacts.items()},
+        }
+
         self._approval_event = asyncio.Event()
         await self._approval_event.wait()
 
@@ -197,6 +213,11 @@ class Blackboard:
             "feedback": decision.get("feedback", ""),
             "timestamp": time.time(),
         })
+
+        snapshot["action"] = decision.get("action", "")
+        snapshot["feedback"] = decision.get("feedback", "")
+        snapshot["artifacts_content"] = {k: v.content for k, v in self.artifacts.items()}
+        approval.snapshots.append(snapshot)
 
         if decision.get("action") == "approve":
             approval.status = "approved"
@@ -221,6 +242,26 @@ class Blackboard:
         }
         if self._approval_event:
             self._approval_event.set()
+
+    def add_negotiation(self, from_agent: str, to_agent: str, issue: str, suggestion: str) -> dict:
+        entry = {
+            "from_agent": from_agent,
+            "to_agent": to_agent,
+            "issue": issue,
+            "suggestion": suggestion,
+            "timestamp": time.time(),
+            "resolved": False,
+        }
+        self.negotiation_log.append(entry)
+        asyncio.ensure_future(self.emit_event("negotiation_raised", entry))
+        return entry
+
+    def resolve_negotiation(self, index: int):
+        self.negotiation_log[index]["resolved"] = True
+        asyncio.ensure_future(self.emit_event("negotiation_resolved", {
+            "from_agent": self.negotiation_log[index]["from_agent"],
+            "to_agent": self.negotiation_log[index]["to_agent"],
+        }))
 
     def is_qa_passed(self) -> bool:
         """检查测试和安全审计是否都通过"""
@@ -257,7 +298,34 @@ class Blackboard:
                 for name, s in self.agent_statuses.items()
             },
             "artifacts": list(self.artifacts.keys()),
+            "negotiation_log": self.negotiation_log,
         }
+
+    def input_fingerprint(self, agent_name: str, dependencies: list[ArtifactType]) -> str:
+        """计算输入指纹：对依赖产出物做SHA256，检测输入是否变化"""
+        import hashlib
+        parts = []
+        for dep in sorted(dependencies, key=lambda d: d.value):
+            artifact = self.get_artifact(dep)
+            if artifact is not None:
+                parts.append(json.dumps(artifact, ensure_ascii=False, sort_keys=True))
+        raw = '|'.join(parts)
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    def check_and_update_fingerprint(self, agent_name: str, fingerprint: str, est_tokens: int = 6000) -> bool:
+        """检查输入指纹是否变化。返回 True 表示相同（可跳过），False 表示需执行"""
+        prev = self._input_fingerprints.get(agent_name)
+        self._input_fingerprints[agent_name] = fingerprint
+        if prev == fingerprint:
+            self._cache_stats["hits"] += 1
+            self._cache_stats["skipped_calls"] += 1
+            self._cache_stats["tokens_saved_est"] += est_tokens
+            return True
+        return False
+
+    def get_cache_stats(self) -> dict:
+        """获取输入去重统计"""
+        return dict(self._cache_stats)
 
     def to_dict(self) -> dict:
         return {
@@ -281,4 +349,5 @@ class Blackboard:
                 for name, s in self.agent_statuses.items()
             },
             "logs": self.logs[-100:],
+            "negotiation_log": self.negotiation_log,
         }

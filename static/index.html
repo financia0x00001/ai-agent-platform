@@ -71,6 +71,9 @@
                             <div class="project-card-footer">
                                 <span class="project-time">{{ formatTime(p.created_at) }}</span>
                                 <div class="project-actions">
+                                    <button class="btn-icon" @click.stop="openForkDialog(p)" title="基于此项目创建">
+                                        <i class="ri-file-copy-line"></i>
+                                    </button>
                                     <button class="btn-icon" @click.stop="deleteProject(p.id)" title="删除">
                                         <i class="ri-delete-bin-line"></i>
                                     </button>
@@ -174,7 +177,12 @@
                             <div class="panel approval-panel" v-if="approvalInfo.current_approval">
                                 <div class="panel-header">
                                     <h2><i class="ri-checkbox-circle-line"></i> {{ approvalInfo.current_info?.label || '审批' }}</h2>
-                                    <span class="approval-waiting-badge">等待审批</span>
+                                    <div style="display:flex;align-items:center;gap:8px;">
+                                        <button class="btn btn-sm btn-ghost" @click="fetchApprovalHistory(approvalInfo.current_approval)" title="查看审批历史">
+                                            <i class="ri-history-line"></i> 历史
+                                        </button>
+                                        <span class="approval-waiting-badge">等待审批</span>
+                                    </div>
                                 </div>
                                 <div class="approval-body">
                                     <p class="approval-desc">{{ approvalInfo.current_info?.description }}</p>
@@ -546,6 +554,77 @@
                             保存配置
                         </button>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Fork项目弹窗 -->
+        <div class="modal-overlay" v-if="showForkProject" @click.self="showForkProject=false">
+            <div class="modal">
+                <div class="modal-header">
+                    <h2>基于已有项目创建</h2>
+                    <button class="btn-icon" @click="showForkProject=false"><i class="ri-close-line"></i></button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>新项目名称</label>
+                        <input type="text" v-model="forkData.name" placeholder="输入新项目名称">
+                    </div>
+                    <div class="form-group">
+                        <label>需求描述（留空则使用源项目需求）</label>
+                        <textarea v-model="forkData.requirement" rows="4"
+                                  placeholder="可选：覆盖源项目的需求描述..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" v-model="forkData.copy_artifacts">
+                            复制源项目的所有产出物
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-ghost" @click="showForkProject=false">取消</button>
+                    <button class="btn btn-primary" @click="forkProject" :disabled="!forkData.name">
+                        创建项目
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 审批历史弹窗 -->
+        <div class="modal-overlay" v-if="showApprovalHistory" @click.self="showApprovalHistory=false">
+            <div class="modal modal-lg">
+                <div class="modal-header">
+                    <h2>审批历史 - {{ approvalHistoryData.point }}</h2>
+                    <button class="btn-icon" @click="showApprovalHistory=false"><i class="ri-close-line"></i></button>
+                </div>
+                <div class="modal-body">
+                    <div v-if="!approvalHistoryData.history.length" class="empty-state small">
+                        <i class="ri-inbox-line"></i>
+                        <p>暂无审批历史</p>
+                    </div>
+                    <div v-for="(item, idx) in approvalHistoryData.history" :key="idx" class="approval-history-item">
+                        <div class="approval-history-header">
+                            <span :class="['status-badge', item.action === 'approve' ? 'completed' : item.action === 'reject' ? 'failed' : 'needs_review']">
+                                {{ item.action === 'approve' ? '通过' : item.action === 'reject' ? '驳回' : '重跑' }}
+                            </span>
+                            <span class="approval-history-time">{{ formatLogTime(item.timestamp) }}</span>
+                        </div>
+                        <div class="approval-history-feedback" v-if="item.feedback">
+                            <i class="ri-chat-3-line"></i> {{ item.feedback }}
+                        </div>
+                        <div class="approval-history-snapshot" v-if="approvalHistoryData.snapshots[idx]">
+                            <div class="snapshot-artifacts">
+                                <span class="snapshot-label">产出物快照：</span>
+                                <span class="snapshot-artifact-tag" v-for="(_, ak) in approvalHistoryData.snapshots[idx].artifacts" :key="ak">
+                                    <i :class="artifactIcon(ak)"></i> {{ artifactLabel(ak) }}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-ghost" @click="showApprovalHistory=false">关闭</button>
                 </div>
             </div>
         </div>

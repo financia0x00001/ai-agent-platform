@@ -104,3 +104,21 @@ async def get_rerun_options(project_id: str, approval_point: str):
         ],
     }
     return {"options": options_map.get(approval_point, [])}
+
+
+@router.get("/{project_id}/history/{approval_point}")
+async def get_approval_history(project_id: str, approval_point: str):
+    blackboard = _blackboards.get(project_id)
+    if not blackboard:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    approval = blackboard.approvals.get(approval_point)
+    if not approval:
+        raise HTTPException(status_code=404, detail="审批点不存在")
+
+    return {
+        "point": approval.point,
+        "status": approval.status,
+        "history": approval.history,
+        "snapshots": approval.snapshots,
+    }

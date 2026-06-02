@@ -41,6 +41,13 @@ class ProjectCreate(BaseModel):
     llm_config_id: Optional[str] = None
 
 
+class ProjectFork(BaseModel):
+    source_project_id: str
+    name: str
+    requirement: str = ""
+    copy_artifacts: bool = True
+
+
 @router.post("")
 async def create_project(data: ProjectCreate):
     project_id = str(uuid.uuid4())
@@ -60,6 +67,39 @@ async def create_project(data: ProjectCreate):
     save_project(project_id, project, blackboard)
 
     return {"message": "项目创建成功", "project_id": project_id}
+
+
+@router.post("/fork")
+async def fork_project(data: ProjectFork):
+    if data.source_project_id not in _projects:
+        raise HTTPException(status_code=404, detail="源项目不存在")
+
+    source_bb = _blackboards.get(data.source_project_id)
+    if not source_bb:
+        raise HTTPException(status_code=404, detail="源项目数据不存在")
+
+    project_id = str(uuid.uuid4())
+    requirement = data.requirement or _projects[data.source_project_id].get("requirement", "")
+    project = {
+        "id": project_id,
+        "name": data.name,
+        "requirement": requirement,
+        "llm_config_id": _projects[data.source_project_id].get("llm_config_id"),
+        "status": "created",
+        "created_at": datetime.now().isoformat(),
+        "source_project_id": data.source_project_id,
+    }
+    _projects[project_id] = project
+
+    blackboard = Blackboard(project_id)
+    if data.copy_artifacts:
+        for k, v in source_bb.artifacts.items():
+            blackboard.set_artifact(k, v.content)
+
+    _blackboards[project_id] = blackboard
+    save_project(project_id, project, blackboard)
+
+    return {"message": "项目已基于模板创建", "project_id": project_id, "copied_artifacts": list(blackboard.artifacts.keys())}
 
 
 @router.get("")
@@ -227,6 +267,14 @@ async def get_project_logs(project_id: str):
     if not blackboard:
         raise HTTPException(status_code=404, detail="项目不存在")
     return {"logs": blackboard.logs}
+
+
+@router.get("/{project_id}/negotiations")
+async def get_negotiations(project_id: str):
+    blackboard = _blackboards.get(project_id)
+    if not blackboard:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return {"negotiations": blackboard.negotiation_log}
 
 
 @router.delete("/{project_id}")

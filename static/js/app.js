@@ -33,6 +33,10 @@ createApp({
         const showRerunOptions = ref(false);
         const rerunOptions = ref([]);
         const selectedRerunAgents = ref([]);
+        const showForkProject = ref(false);
+        const forkData = reactive({ source_project_id: '', name: '', requirement: '', copy_artifacts: true });
+        const showApprovalHistory = ref(false);
+        const approvalHistoryData = reactive({ point: '', history: [], snapshots: [] });
 
         const newProject = reactive({ name: '', requirement: '', llm_config_id: '' });
         const newLLM = reactive({
@@ -304,6 +308,44 @@ createApp({
                     currentView.value = 'projects';
                 }
                 await fetchProjects();
+            } catch (e) { console.error(e); }
+        }
+
+        async function forkProject() {
+            try {
+                const res = await fetch(`${API}/projects/fork`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(forkData),
+                });
+                const data = await res.json();
+                showForkProject.value = false;
+                await fetchProjects();
+                const proj = projects.value.find(p => p.id === data.project_id);
+                if (proj) openProject(proj);
+                showToast('项目已基于模板创建', 'success');
+            } catch (e) { console.error(e); }
+        }
+
+        function openForkDialog(project) {
+            forkData.source_project_id = project.id;
+            forkData.name = project.name + ' (副本)';
+            forkData.requirement = '';
+            forkData.copy_artifacts = true;
+            showForkProject.value = true;
+        }
+
+        async function fetchApprovalHistory(point) {
+            if (!currentProject.value) return;
+            try {
+                const res = await fetch(`${API}/approval/${currentProject.value.id}/history/${point}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    approvalHistoryData.point = data.point;
+                    approvalHistoryData.history = data.history;
+                    approvalHistoryData.snapshots = data.snapshots || [];
+                    showApprovalHistory.value = true;
+                }
             } catch (e) { console.error(e); }
         }
 
@@ -657,6 +699,8 @@ createApp({
             hasDefaultLLM, showNewProject, showNewLLM, logsContainer,
             deliveryReport, deliveryPreview,
             approvalInfo, approvalFeedback, showRerunOptions, rerunOptions, selectedRerunAgents,
+            showForkProject, forkData, forkProject, openForkDialog,
+            showApprovalHistory, approvalHistoryData, fetchApprovalHistory,
             newProject, newLLM, artifactTabs, currentArtifactContent,
             hasArtifact, fetchProjects, openProject, createProject,
             startProject, stopProject, deleteProject, createLLMConfig,

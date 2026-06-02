@@ -4,12 +4,15 @@ import json
 
 from agents.base import BaseAgent
 from core.blackboard import Blackboard, ArtifactType
+from core.cache import ContextCompressor
 
 
 class SecurityAuditorAgent(BaseAgent):
     name = "security_auditor"
     display_name = "安全审计"
     description = "审计前后端代码的安全漏洞和风险"
+    can_negotiate = True
+    default_temperature = 0.2  # 分析类任务，低温度确保一致性+启用缓存
 
     def get_dependencies(self) -> list[ArtifactType]:
         return [ArtifactType.FRONTEND_CODE, ArtifactType.BACKEND_CODE]
@@ -69,15 +72,26 @@ class SecurityAuditorAgent(BaseAgent):
         "low": 0
     },
     "all_passed": true/false,
-    "conclusion": "审计结论"
-}"""
+    "conclusion": "审计结论",
+    "negotiations": [
+        {"to_agent": "backend_developer", "issue": "问题描述", "suggestion": "建议修改方案"},
+        {"to_agent": "frontend_developer", "issue": "问题描述", "suggestion": "建议修改方案"}
+    ]
+}
+
+协商机制：如果你在安全审计中发现代码实现存在安全漏洞需要开发者修复，请在输出的JSON中添加"negotiations"字段：
+"negotiations": [
+    {"to_agent": "backend_developer", "issue": "问题描述", "suggestion": "建议修改方案"},
+    {"to_agent": "frontend_developer", "issue": "问题描述", "suggestion": "建议修改方案"}
+]
+如果没有问题，则不需要添加此字段。"""
 
     def get_user_prompt(self, blackboard: Blackboard, **kwargs) -> str:
         frontend = blackboard.get_artifact(ArtifactType.FRONTEND_CODE)
         backend = blackboard.get_artifact(ArtifactType.BACKEND_CODE)
 
-        fe_text = json.dumps(frontend, ensure_ascii=False, indent=2) if isinstance(frontend, dict) else str(frontend)
-        be_text = json.dumps(backend, ensure_ascii=False, indent=2) if isinstance(backend, dict) else str(backend)
+        fe_text = ContextCompressor.compress_artifact(frontend)
+        be_text = ContextCompressor.compress_artifact(backend)
 
         return f"""请对以下代码进行全面安全审计：
 

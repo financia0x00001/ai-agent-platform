@@ -89,35 +89,49 @@ class DeliveryPackager:
             return files
 
         if isinstance(backend, dict):
-            code = backend.get("code", "")
-            if code:
-                files.append(ProjectFile(
-                    path=f"{self.project_name}/backend/app/main.py",
-                    content=self._extract_code(code),
-                    description="后端主程序",
-                ))
+            if "files" in backend and backend["files"]:
+                for f in backend["files"]:
+                    if isinstance(f, dict) and f.get("path") and f.get("content"):
+                        files.append(ProjectFile(
+                            path=f"{self.project_name}/backend/{f['path']}",
+                            content=self._extract_code(f["content"]),
+                            description=f.get("description", ""),
+                        ))
+            else:
+                code = backend.get("code", "")
+                if code:
+                    files.append(ProjectFile(
+                        path=f"{self.project_name}/backend/app/main.py",
+                        content=self._extract_code(code),
+                        description="后端主程序",
+                    ))
 
-            api_design = backend.get("api_design") or self.artifacts.get("api_design")
-            if api_design:
-                files.append(ProjectFile(
-                    path=f"{self.project_name}/backend/app/api_routes.py",
-                    content=self._generate_api_routes(api_design),
-                    description="API路由定义",
-                ))
+            has_main = any(f.path.endswith("app/main.py") or f.path.endswith("main.py") for f in files)
+            has_requirements = any(f.path.endswith("requirements.txt") for f in files)
 
-            db_schema = backend.get("db_schema") or self.artifacts.get("db_schema")
-            if db_schema:
-                files.append(ProjectFile(
-                    path=f"{self.project_name}/backend/app/models.py",
-                    content=self._generate_models(db_schema),
-                    description="数据模型",
-                ))
+            if not has_main:
+                api_design = backend.get("api_design") or self.artifacts.get("api_design")
+                if api_design:
+                    files.append(ProjectFile(
+                        path=f"{self.project_name}/backend/app/api_routes.py",
+                        content=self._generate_api_routes(api_design),
+                        description="API路由定义",
+                    ))
 
-            files.append(ProjectFile(
-                path=f"{self.project_name}/backend/requirements.txt",
-                content="fastapi==0.115.6\nuvicorn[standard]==0.34.0\npydantic==2.10.4\nsqlalchemy==2.0.36\npython-dotenv==1.0.1\n",
-                description="后端依赖",
-            ))
+                db_schema = backend.get("db_schema") or self.artifacts.get("db_schema")
+                if db_schema:
+                    files.append(ProjectFile(
+                        path=f"{self.project_name}/backend/app/models.py",
+                        content=self._generate_models(db_schema),
+                        description="数据模型",
+                    ))
+
+            if not has_requirements:
+                files.append(ProjectFile(
+                    path=f"{self.project_name}/backend/requirements.txt",
+                    content="fastapi==0.115.6\nuvicorn[standard]==0.34.0\npydantic==2.10.4\nsqlalchemy==2.0.36\npython-dotenv==1.0.1\n",
+                    description="后端依赖",
+                ))
 
             files.append(ProjectFile(
                 path=f"{self.project_name}/backend/README.md",
@@ -144,42 +158,73 @@ class DeliveryPackager:
             for i, page in enumerate(pages):
                 if isinstance(page, dict):
                     name = page.get("name", f"page_{i}")
-                    code = page.get("code", "")
                     route = page.get("route", f"/{name}")
-                    safe_name = self._safe_name(name)
-                    files.append(ProjectFile(
-                        path=f"{self.project_name}/frontend/pages/{safe_name}.html",
-                        content=self._extract_code(code),
-                        description=f"页面: {name} ({route})",
-                    ))
+                    page_files = page.get("files", [])
+                    if page_files:
+                        for pf in page_files:
+                            if isinstance(pf, dict) and pf.get("path") and pf.get("content"):
+                                files.append(ProjectFile(
+                                    path=f"{self.project_name}/frontend/{pf['path']}",
+                                    content=self._extract_code(pf["content"]),
+                                    description=pf.get("description", f"页面: {name} ({route})"),
+                                ))
+                    elif page.get("code"):
+                        safe_name = self._safe_name(name)
+                        files.append(ProjectFile(
+                            path=f"{self.project_name}/frontend/pages/{safe_name}.html",
+                            content=self._extract_code(page["code"]),
+                            description=f"页面: {name} ({route})",
+                        ))
 
             components = frontend.get("components", [])
             for i, comp in enumerate(components):
                 if isinstance(comp, dict):
                     name = comp.get("name", f"component_{i}")
-                    code = comp.get("code", "")
-                    safe_name = self._safe_name(name)
+                    comp_files = comp.get("files", [])
+                    if comp_files:
+                        for cf in comp_files:
+                            if isinstance(cf, dict) and cf.get("path") and cf.get("content"):
+                                files.append(ProjectFile(
+                                    path=f"{self.project_name}/frontend/{cf['path']}",
+                                    content=self._extract_code(cf["content"]),
+                                    description=cf.get("description", f"组件: {name}"),
+                                ))
+                    elif comp.get("code"):
+                        safe_name = self._safe_name(name)
+                        files.append(ProjectFile(
+                            path=f"{self.project_name}/frontend/components/{safe_name}.html",
+                            content=self._extract_code(comp["code"]),
+                            description=f"组件: {name}",
+                        ))
+
+            global_files = frontend.get("files", [])
+            for gf in global_files:
+                if isinstance(gf, dict) and gf.get("path") and gf.get("content"):
                     files.append(ProjectFile(
-                        path=f"{self.project_name}/frontend/components/{safe_name}.html",
-                        content=self._extract_code(code),
-                        description=f"组件: {name}",
+                        path=f"{self.project_name}/frontend/{gf['path']}",
+                        content=self._extract_code(gf["content"]),
+                        description=gf.get("description", ""),
                     ))
 
             api_layer = frontend.get("api_layer", "")
             if api_layer:
-                files.append(ProjectFile(
-                    path=f"{self.project_name}/frontend/js/api.js",
-                    content=self._extract_code(api_layer),
-                    description="API调用层",
-                ))
+                has_api = any("api.js" in f.path for f in files)
+                if not has_api:
+                    files.append(ProjectFile(
+                        path=f"{self.project_name}/frontend/js/api.js",
+                        content=self._extract_code(api_layer),
+                        description="API调用层",
+                    ))
 
             router = frontend.get("router", "")
             if router:
-                files.append(ProjectFile(
-                    path=f"{self.project_name}/frontend/js/router.js",
-                    content=self._extract_code(router),
-                    description="路由配置",
-                ))
+                has_router = any("router.js" in f.path for f in files)
+                if not has_router:
+                    files.append(ProjectFile(
+                        path=f"{self.project_name}/frontend/js/router.js",
+                        content=self._extract_code(router),
+                        description="路由配置",
+                    ))
 
             files.append(ProjectFile(
                 path=f"{self.project_name}/frontend/README.md",
